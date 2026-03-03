@@ -4153,6 +4153,11 @@ def render_auth_screen() -> None:
                 password_col, password_status_col = st.columns([4, 2], gap="small")
                 with password_col:
                     password = st.text_input("Password", type="password", key="signup_password")
+                    confirm_password = st.text_input(
+                        "Re-enter Password",
+                        type="password",
+                        key="signup_confirm_password",
+                    )
                 with password_status_col:
                     st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
                     st.markdown(
@@ -4171,15 +4176,6 @@ def render_auth_screen() -> None:
                             f"<div style='font-size:0.82rem;color:{color};font-weight:600;'>{icon} {label}</div>",
                             unsafe_allow_html=True,
                         )
-                confirm_col, confirm_status_col = st.columns([4, 2], gap="small")
-                with confirm_col:
-                    confirm_password = st.text_input(
-                        "Re-enter Password",
-                        type="password",
-                        key="signup_confirm_password",
-                    )
-                with confirm_status_col:
-                    st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
                     if password and confirm_password and password != confirm_password:
                         st.markdown(
                             "<span style='color:#dc2626;font-size:0.86rem;font-weight:600;'>"
