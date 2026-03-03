@@ -10,6 +10,7 @@ except Exception as exc:  # pragma: no cover
 
 TABLE_ORDER = [
     "users",
+    "signup_verification_requests",
     "chat_sessions",
     "analysis_history",
     "auth_sessions",
@@ -90,6 +91,7 @@ def main() -> None:
             with pg_conn.cursor() as cur:
                 cur.execute(
                     "TRUNCATE TABLE promo_redemptions, promo_codes, chat_history, user_email_otp_events, "
+                    "signup_verification_requests, "
                     "user_login_events, auth_sessions, "
                     "analysis_history, chat_sessions, users RESTART IDENTITY CASCADE"
                 )

@@ -97,10 +97,10 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
   ```
 
 ## Email Verification
-- New password accounts are created with `email_verified_at = NULL`.
+- Password signup now creates a pending request in `signup_verification_requests` (not a user account).
 - App sends a 6-digit OTP to the signup email using configured SMTP.
-- OTP records are stored in `user_email_otp_events` (hashed code, expiry, attempts, consumed time).
-- Login is blocked until `users.email_verified_at` is set.
+- After OTP verification, the real user row is created in `users` with `email_verified_at` set.
+- OTP attempt/rate-limit state is stored in DB and login remains blocked until verification is complete.
 - OAuth users are marked verified automatically because provider identity already verifies email ownership.
 
 ## Security Baseline

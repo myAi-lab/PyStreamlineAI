@@ -38,6 +38,7 @@ EMAIL_OTP_DIGITS = 6
 EMAIL_OTP_TTL_MINUTES_DEFAULT = 10
 EMAIL_OTP_RESEND_SECONDS_DEFAULT = 60
 EMAIL_OTP_MAX_ATTEMPTS_DEFAULT = 5
+SIGNUP_REQUEST_TTL_HOURS_DEFAULT = 24
 PUBLIC_EMAIL_DOMAINS = {
     "gmail.com",
     "googlemail.com",
@@ -390,6 +391,28 @@ def init_db() -> None:
     )
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS signup_verification_requests (
+            id {id_pk_sql},
+            full_name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            years_experience TEXT,
+            role_contact_email TEXT,
+            profile_data TEXT,
+            promo_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            otp_code_hash TEXT,
+            otp_sent_at TEXT,
+            otp_expires_at TEXT,
+            otp_attempts INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS promo_codes (
             id {id_pk_sql},
             code TEXT NOT NULL UNIQUE,
@@ -442,8 +465,18 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_user_id ON user_email_otp_events(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_email ON user_email_otp_events(email)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_expires_at ON user_email_otp_events(expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signup_verification_requests_email ON signup_verification_requests(email)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signup_verification_requests_expires_at ON signup_verification_requests(expires_at)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_redemptions_email ON promo_redemptions(email)")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "DELETE FROM signup_verification_requests WHERE expires_at <= ?",
+        (now_iso,),
+    )
 
     legacy_users = conn.execute(
         """
@@ -565,6 +598,20 @@ def get_email_otp_max_attempts() -> int:
     )
 
 
+def get_signup_request_ttl_hours() -> int:
+    return parse_int(
+        get_config_value(
+            "SIGNUP_REQUEST_TTL_HOURS",
+            "email_otp",
+            "signup_request_ttl_hours",
+            str(SIGNUP_REQUEST_TTL_HOURS_DEFAULT),
+        ),
+        SIGNUP_REQUEST_TTL_HOURS_DEFAULT,
+        1,
+        72,
+    )
+
+
 def get_smtp_settings() -> dict[str, Any]:
     host = get_config_value("SMTP_HOST", "smtp", "host")
     port = parse_int(
@@ -671,14 +718,329 @@ def get_user_identity_by_email(email: str) -> dict[str, Any] | None:
         conn.close()
 
 
-def mark_pending_email_verification(user_id: int, email: str) -> None:
-    st.session_state.email_verification_user_id = int(user_id or 0)
+def get_pending_signup_request_by_email(email: str) -> dict[str, Any] | None:
+    cleaned_email = str(email or "").strip().lower()
+    if not cleaned_email:
+        return None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM signup_verification_requests
+            WHERE email = ? AND expires_at > ?
+            LIMIT 1
+            """,
+            (cleaned_email, now_iso),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_pending_signup_request_by_id_email(request_id: int, email: str) -> dict[str, Any] | None:
+    cleaned_email = str(email or "").strip().lower()
+    if request_id <= 0 or not cleaned_email:
+        return None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM signup_verification_requests
+            WHERE id = ? AND email = ? AND expires_at > ?
+            LIMIT 1
+            """,
+            (request_id, cleaned_email, now_iso),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def create_or_update_signup_verification_request(
+    full_name: str,
+    email: str,
+    password: str,
+    role: str,
+    years_experience: str,
+    role_contact_email: str = "",
+    profile_data: dict[str, Any] | None = None,
+    promo_code: str = "",
+) -> tuple[bool, str, int]:
+    cleaned_email = str(email or "").strip().lower()
+    cleaned_role_contact_email = str(role_contact_email or "").strip().lower()
+    normalized_role = str(role or "").strip().title()
+    cleaned_years = str(years_experience or "").strip()
+    cleaned_profile = profile_data if isinstance(profile_data, dict) else {}
+    profile_payload = json.dumps(cleaned_profile, separators=(",", ":")) if cleaned_profile else None
+    normalized_promo = normalize_promo_code(promo_code)
+
+    if user_exists_for_signup(cleaned_email, cleaned_role_contact_email):
+        return False, "User exists, please login.", 0
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    request_expires = (now + timedelta(hours=get_signup_request_ttl_hours())).isoformat()
+    password_hash = hash_password(password)
+
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM signup_verification_requests
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (cleaned_email,),
+        ).fetchone()
+
+        if existing is None:
+            cur = conn.execute(
+                """
+                INSERT INTO signup_verification_requests (
+                    full_name, email, password_hash, role, years_experience, role_contact_email, profile_data,
+                    promo_code, created_at, updated_at, expires_at, otp_code_hash, otp_sent_at, otp_expires_at, otp_attempts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0)
+                """,
+                (
+                    full_name.strip(),
+                    cleaned_email,
+                    password_hash,
+                    normalized_role,
+                    cleaned_years,
+                    cleaned_role_contact_email or None,
+                    profile_payload,
+                    normalized_promo or None,
+                    now_iso,
+                    now_iso,
+                    request_expires,
+                ),
+            )
+            request_id = int(cur.lastrowid or 0)
+        else:
+            request_id = int(existing["id"] if isinstance(existing, dict) else existing[0])
+            conn.execute(
+                """
+                UPDATE signup_verification_requests
+                SET
+                    full_name = ?,
+                    password_hash = ?,
+                    role = ?,
+                    years_experience = ?,
+                    role_contact_email = ?,
+                    profile_data = ?,
+                    promo_code = ?,
+                    updated_at = ?,
+                    expires_at = ?,
+                    otp_code_hash = NULL,
+                    otp_sent_at = NULL,
+                    otp_expires_at = NULL,
+                    otp_attempts = 0
+                WHERE id = ?
+                """,
+                (
+                    full_name.strip(),
+                    password_hash,
+                    normalized_role,
+                    cleaned_years,
+                    cleaned_role_contact_email or None,
+                    profile_payload,
+                    normalized_promo or None,
+                    now_iso,
+                    request_expires,
+                    request_id,
+                ),
+            )
+        conn.commit()
+        if request_id <= 0:
+            return False, "Unable to start verification right now. Please try again.", 0
+        return True, "Verification started.", request_id
+    finally:
+        conn.close()
+
+
+def send_signup_verification_otp(request_id: int, email: str) -> tuple[bool, str]:
+    cleaned_email = str(email or "").strip().lower()
+    if request_id <= 0 or not cleaned_email:
+        return False, "Verification request is invalid."
+
+    request = get_pending_signup_request_by_id_email(request_id, cleaned_email)
+    if request is None:
+        return False, "Verification request expired. Create account again."
+
+    config_ok, config_msg = can_send_email_otp()
+    if not config_ok:
+        return False, config_msg
+
+    now = datetime.now(timezone.utc)
+    resend_seconds = get_email_otp_resend_seconds()
+    otp_sent_at = str(request.get("otp_sent_at") or "").strip()
+    if otp_sent_at:
+        resend_after = (now - timedelta(seconds=resend_seconds)).isoformat()
+        if otp_sent_at > resend_after:
+            return False, f"Please wait {resend_seconds} seconds before requesting another code."
+
+    ttl_minutes = get_email_otp_ttl_minutes()
+    otp_code = generate_email_otp_code()
+    sent, send_msg = send_email_otp_message(cleaned_email, otp_code, ttl_minutes)
+    if not sent:
+        return False, send_msg
+
+    now_iso = now.isoformat()
+    otp_hash = hash_email_otp(otp_code)
+    otp_expires = (now + timedelta(minutes=ttl_minutes)).isoformat()
+    conn = db_connect()
+    try:
+        conn.execute(
+            """
+            UPDATE signup_verification_requests
+            SET otp_code_hash = ?, otp_sent_at = ?, otp_expires_at = ?, otp_attempts = 0, updated_at = ?
+            WHERE id = ? AND email = ?
+            """,
+            (otp_hash, now_iso, otp_expires, now_iso, request_id, cleaned_email),
+        )
+        conn.commit()
+        return True, "Verification code sent to your email."
+    finally:
+        conn.close()
+
+
+def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[bool, str]:
+    email = str(request.get("email", "")).strip().lower()
+    if not email:
+        return False, "Signup request data is invalid."
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (email,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO users (
+                    full_name, email, password_hash, role, years_experience, role_contact_email, profile_data,
+                    email_verified_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(request.get("full_name", "")).strip() or email.split("@")[0],
+                    email,
+                    str(request.get("password_hash", "")).strip(),
+                    str(request.get("role", "")).strip(),
+                    str(request.get("years_experience", "")).strip(),
+                    str(request.get("role_contact_email", "")).strip() or None,
+                    str(request.get("profile_data", "")).strip() or None,
+                    now_iso,
+                    str(request.get("created_at", "")).strip() or now_iso,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE email = ?",
+                (now_iso, email),
+            )
+        conn.commit()
+    except Exception as ex:
+        if not is_unique_violation(ex):
+            return False, "Unable to finalize account creation right now."
+    finally:
+        conn.close()
+
+    promo_code = normalize_promo_code(str(request.get("promo_code", "")).strip())
+    if promo_code:
+        redeemed, redeem_msg = redeem_promo_code(promo_code, email)
+        if not redeemed:
+            return True, f"Email verified. Login ready. Promo note: {redeem_msg}"
+    return True, "Email verified and account created. You can now log in."
+
+
+def verify_signup_verification_otp(request_id: int, email: str, otp_code: str) -> tuple[bool, str]:
+    cleaned_email = str(email or "").strip().lower()
+    cleaned_code = re.sub(r"\D", "", str(otp_code or "").strip())
+    if request_id <= 0 or not cleaned_email:
+        return False, "Verification request is invalid."
+    if len(cleaned_code) != EMAIL_OTP_DIGITS:
+        return False, f"Enter the {EMAIL_OTP_DIGITS}-digit verification code."
+    if not get_email_otp_pepper():
+        return False, "Email OTP is not configured: missing OTP secret."
+
+    request = get_pending_signup_request_by_id_email(request_id, cleaned_email)
+    if request is None:
+        return False, "Verification request expired. Create account again."
+
+    otp_hash = str(request.get("otp_code_hash", "")).strip()
+    otp_expires = str(request.get("otp_expires_at", "")).strip()
+    if not otp_hash or not otp_expires:
+        return False, "No active verification code found. Request a new code."
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if otp_expires <= now_iso:
+        return False, "Verification code expired. Request a new code."
+
+    max_attempts = get_email_otp_max_attempts()
+    attempts = int(request.get("otp_attempts", 0) or 0)
+    if attempts >= max_attempts:
+        return False, "Too many attempts. Request a new code."
+
+    expected_hash = hash_email_otp(cleaned_code)
+    if not hmac.compare_digest(otp_hash, expected_hash):
+        conn = db_connect()
+        try:
+            conn.execute(
+                "UPDATE signup_verification_requests SET otp_attempts = otp_attempts + 1 WHERE id = ? AND email = ?",
+                (request_id, cleaned_email),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        remaining = max(0, max_attempts - (attempts + 1))
+        if remaining <= 0:
+            return False, "Invalid code. Too many attempts. Request a new code."
+        return False, f"Invalid code. {remaining} attempts remaining."
+
+    created_ok, created_msg = create_verified_user_from_signup_request(request)
+    if not created_ok:
+        return False, created_msg
+
+    conn = db_connect()
+    try:
+        conn.execute(
+            "DELETE FROM signup_verification_requests WHERE id = ? AND email = ?",
+            (request_id, cleaned_email),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return True, created_msg
+
+
+def mark_pending_email_verification(ref_id: int, email: str, mode: str = "signup_request") -> None:
+    st.session_state.email_verification_ref_id = int(ref_id or 0)
     st.session_state.email_verification_email = str(email or "").strip().lower()
+    st.session_state.email_verification_mode = str(mode or "").strip().lower() or "signup_request"
 
 
 def clear_pending_email_verification() -> None:
-    st.session_state.email_verification_user_id = 0
+    st.session_state.email_verification_ref_id = 0
     st.session_state.email_verification_email = ""
+    st.session_state.email_verification_mode = ""
 
 
 def send_email_verification_otp(user_id: int, email: str) -> tuple[bool, str]:
@@ -3408,8 +3770,9 @@ def init_state() -> None:
         "signup_success_message": "",
         "signup_warning_message": "",
         "signup_form_reset_pending": False,
-        "email_verification_user_id": 0,
+        "email_verification_ref_id": 0,
         "email_verification_email": "",
+        "email_verification_mode": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -3452,9 +3815,10 @@ def apply_pending_signup_form_reset() -> None:
 
 
 def render_email_verification_panel() -> None:
-    pending_user_id = int(st.session_state.get("email_verification_user_id") or 0)
+    pending_ref_id = int(st.session_state.get("email_verification_ref_id") or 0)
     pending_email = str(st.session_state.get("email_verification_email", "")).strip().lower()
-    if pending_user_id <= 0 or not pending_email:
+    verification_mode = str(st.session_state.get("email_verification_mode", "")).strip().lower()
+    if pending_ref_id <= 0 or not pending_email:
         return
 
     st.markdown("---")
@@ -3475,15 +3839,23 @@ def render_email_verification_panel() -> None:
         cancel_clicked = st.button("Cancel", key="cancel_email_otp_btn", use_container_width=True)
 
     if verify_clicked:
-        verified, verify_msg = verify_email_verification_otp(pending_user_id, pending_email, otp_code)
+        if verification_mode == "user_account":
+            verified, verify_msg = verify_email_verification_otp(pending_ref_id, pending_email, otp_code)
+        else:
+            verified, verify_msg = verify_signup_verification_otp(pending_ref_id, pending_email, otp_code)
         if verified:
             clear_pending_email_verification()
+            st.session_state.signup_success_message = ""
+            st.session_state.signup_warning_message = ""
             st.success(verify_msg)
         else:
             st.error(verify_msg)
 
     if resend_clicked:
-        resent, resend_msg = send_email_verification_otp(pending_user_id, pending_email)
+        if verification_mode == "user_account":
+            resent, resend_msg = send_email_verification_otp(pending_ref_id, pending_email)
+        else:
+            resent, resend_msg = send_signup_verification_otp(pending_ref_id, pending_email)
         if resent:
             st.success(resend_msg)
         else:
@@ -3604,7 +3976,11 @@ def render_auth_screen() -> None:
                     if bool(user.get("pending_verification")):
                         pending_user_id = int(user.get("id") or 0)
                         pending_email = str(user.get("email") or email).strip().lower()
-                        mark_pending_email_verification(pending_user_id, pending_email)
+                        mark_pending_email_verification(
+                            pending_user_id,
+                            pending_email,
+                            mode="user_account",
+                        )
                         sent, otp_msg = send_email_verification_otp(pending_user_id, pending_email)
                         if sent:
                             st.warning("Email not verified. A verification code has been sent to your inbox.")
@@ -3634,6 +4010,24 @@ def render_auth_screen() -> None:
                     st.success("Logged in successfully.")
                     st.rerun()
                 else:
+                    pending_signup = get_pending_signup_request_by_email(email)
+                    if pending_signup is not None and verify_password(
+                        str(password or ""),
+                        str(pending_signup.get("password_hash", "")),
+                    ):
+                        pending_request_id = int(pending_signup.get("id") or 0)
+                        pending_email = str(pending_signup.get("email", "")).strip().lower()
+                        mark_pending_email_verification(
+                            pending_request_id,
+                            pending_email,
+                            mode="signup_request",
+                        )
+                        sent, otp_msg = send_signup_verification_otp(pending_request_id, pending_email)
+                        if sent:
+                            st.warning("Account verification pending. We sent a verification code to your email.")
+                        else:
+                            st.warning(f"Account verification pending. {otp_msg}")
+                        st.rerun()
                     st.error("Invalid email or password.")
 
         with tab_signup:
@@ -3643,8 +4037,8 @@ def render_auth_screen() -> None:
                 st.success(signup_success_message)
                 if signup_warning_message:
                     st.warning(signup_warning_message)
-                if int(st.session_state.get("email_verification_user_id") or 0) > 0:
-                    st.info("Enter the OTP code below, then log in.")
+                if int(st.session_state.get("email_verification_ref_id") or 0) > 0:
+                    st.info("Enter the OTP code below to finish account creation.")
                 else:
                     st.info("Use the Login tab to sign in.")
                 if st.button("Create another account", key="signup_create_another_btn"):
@@ -3801,43 +4195,33 @@ def render_auth_screen() -> None:
                                     st.error(promo_msg)
 
                             if promo_ok:
-                                ok, msg = create_user(
+                                request_ok, request_msg, request_id = create_or_update_signup_verification_request(
                                     full_name,
                                     cleaned_email,
                                     cleaned_password,
                                     role,
                                     normalized_years,
                                     role_contact_email=role_contact_email,
-                                    confirm_password=cleaned_confirm_password,
                                     profile_data=cleaned_profile_data,
+                                    promo_code=promo_to_redeem,
                                 )
-                                if ok:
-                                    st.session_state.signup_success_message = msg
+                                if not request_ok:
+                                    st.error(request_msg)
+                                else:
+                                    mark_pending_email_verification(
+                                        request_id,
+                                        cleaned_email,
+                                        mode="signup_request",
+                                    )
+                                    sent, otp_msg = send_signup_verification_otp(request_id, cleaned_email)
+                                    st.session_state.signup_success_message = (
+                                        "Verification code sent. Enter OTP below to finish account creation."
+                                    )
                                     st.session_state.signup_warning_message = ""
-                                    created_user = get_user_identity_by_email(cleaned_email)
-                                    if created_user is not None:
-                                        created_user_id = int(created_user.get("id") or 0)
-                                        mark_pending_email_verification(created_user_id, cleaned_email)
-                                        sent, otp_msg = send_email_verification_otp(created_user_id, cleaned_email)
-                                        if sent:
-                                            st.session_state.signup_success_message = (
-                                                "Account created. We sent a verification code to your email."
-                                            )
-                                        else:
-                                            st.session_state.signup_warning_message = otp_msg
-                                    if promo_to_redeem:
-                                        redeemed, redeem_msg = redeem_promo_code(promo_to_redeem, email)
-                                        if not redeemed:
-                                            st.session_state.signup_warning_message = (
-                                                "Account created, but promo could not be redeemed: "
-                                                f"{redeem_msg}"
-                                            )
-                                        else:
-                                            st.session_state.auth_promo_status = redeem_msg
+                                    if not sent:
+                                        st.session_state.signup_warning_message = otp_msg
                                     clear_signup_form_state()
                                     st.rerun()
-                                else:
-                                    st.error(msg)
 
         render_email_verification_panel()
 
