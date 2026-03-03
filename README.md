@@ -29,6 +29,7 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      $env:SMTP_USE_TLS="true"
      $env:OTP_PEPPER="long_random_secret_value"
      ```
+   - `OTP_PEPPER` is optional if `[auth].cookie_secret` is already set; that value is used as fallback.
 5. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)

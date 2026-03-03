@@ -516,7 +516,11 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def get_email_otp_pepper() -> str:
-    return get_config_value("OTP_PEPPER", "email_otp", "pepper")
+    explicit = get_config_value("OTP_PEPPER", "email_otp", "pepper")
+    if explicit:
+        return explicit
+    # Fallback to existing auth cookie secret so OTP can work without an extra mandatory key.
+    return get_config_value("AUTH_COOKIE_SECRET", "auth", "cookie_secret")
 
 
 def get_email_otp_ttl_minutes() -> int:
@@ -589,7 +593,7 @@ def get_smtp_settings() -> dict[str, Any]:
 def can_send_email_otp() -> tuple[bool, str]:
     pepper = get_email_otp_pepper()
     if not pepper:
-        return False, "Email OTP is not configured: missing OTP_PEPPER."
+        return False, "Email OTP is not configured: missing OTP secret."
 
     smtp_cfg = get_smtp_settings()
     if not smtp_cfg["host"] or not smtp_cfg["from_email"]:
@@ -602,7 +606,7 @@ def can_send_email_otp() -> tuple[bool, str]:
 def hash_email_otp(otp_code: str) -> str:
     pepper = get_email_otp_pepper()
     if not pepper:
-        raise RuntimeError("Missing OTP_PEPPER configuration.")
+        raise RuntimeError("Missing OTP secret configuration.")
     raw = f"{str(otp_code).strip()}:{pepper}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -741,9 +745,8 @@ def verify_email_verification_otp(user_id: int, email: str, otp_code: str) -> tu
     if len(cleaned_code) != EMAIL_OTP_DIGITS:
         return False, f"Enter the {EMAIL_OTP_DIGITS}-digit verification code."
 
-    config_ok, config_msg = can_send_email_otp()
-    if not config_ok:
-        return False, config_msg
+    if not get_email_otp_pepper():
+        return False, "Email OTP is not configured: missing OTP secret."
 
     max_attempts = get_email_otp_max_attempts()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -3798,47 +3801,43 @@ def render_auth_screen() -> None:
                                     st.error(promo_msg)
 
                             if promo_ok:
-                                otp_config_ok, otp_config_msg = can_send_email_otp()
-                                if not otp_config_ok:
-                                    st.error(f"Email verification is unavailable: {otp_config_msg}")
+                                ok, msg = create_user(
+                                    full_name,
+                                    cleaned_email,
+                                    cleaned_password,
+                                    role,
+                                    normalized_years,
+                                    role_contact_email=role_contact_email,
+                                    confirm_password=cleaned_confirm_password,
+                                    profile_data=cleaned_profile_data,
+                                )
+                                if ok:
+                                    st.session_state.signup_success_message = msg
+                                    st.session_state.signup_warning_message = ""
+                                    created_user = get_user_identity_by_email(cleaned_email)
+                                    if created_user is not None:
+                                        created_user_id = int(created_user.get("id") or 0)
+                                        mark_pending_email_verification(created_user_id, cleaned_email)
+                                        sent, otp_msg = send_email_verification_otp(created_user_id, cleaned_email)
+                                        if sent:
+                                            st.session_state.signup_success_message = (
+                                                "Account created. We sent a verification code to your email."
+                                            )
+                                        else:
+                                            st.session_state.signup_warning_message = otp_msg
+                                    if promo_to_redeem:
+                                        redeemed, redeem_msg = redeem_promo_code(promo_to_redeem, email)
+                                        if not redeemed:
+                                            st.session_state.signup_warning_message = (
+                                                "Account created, but promo could not be redeemed: "
+                                                f"{redeem_msg}"
+                                            )
+                                        else:
+                                            st.session_state.auth_promo_status = redeem_msg
+                                    clear_signup_form_state()
+                                    st.rerun()
                                 else:
-                                    ok, msg = create_user(
-                                        full_name,
-                                        cleaned_email,
-                                        cleaned_password,
-                                        role,
-                                        normalized_years,
-                                        role_contact_email=role_contact_email,
-                                        confirm_password=cleaned_confirm_password,
-                                        profile_data=cleaned_profile_data,
-                                    )
-                                    if ok:
-                                        st.session_state.signup_success_message = msg
-                                        st.session_state.signup_warning_message = ""
-                                        created_user = get_user_identity_by_email(cleaned_email)
-                                        if created_user is not None:
-                                            created_user_id = int(created_user.get("id") or 0)
-                                            mark_pending_email_verification(created_user_id, cleaned_email)
-                                            sent, otp_msg = send_email_verification_otp(created_user_id, cleaned_email)
-                                            if sent:
-                                                st.session_state.signup_success_message = (
-                                                    "Account created. We sent a verification code to your email."
-                                                )
-                                            else:
-                                                st.session_state.signup_warning_message = otp_msg
-                                        if promo_to_redeem:
-                                            redeemed, redeem_msg = redeem_promo_code(promo_to_redeem, email)
-                                            if not redeemed:
-                                                st.session_state.signup_warning_message = (
-                                                    "Account created, but promo could not be redeemed: "
-                                                    f"{redeem_msg}"
-                                                )
-                                            else:
-                                                st.session_state.auth_promo_status = redeem_msg
-                                        clear_signup_form_state()
-                                        st.rerun()
-                                    else:
-                                        st.error(msg)
+                                    st.error(msg)
 
         render_email_verification_panel()
 
