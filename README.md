@@ -17,7 +17,19 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      ```powershell
      $env:DATABASE_URL="postgresql://pystreamline_app:YOUR_PASSWORD@localhost:5432/pystreamline"
      ```
-4. Optional OAuth login (recommended for refresh-persistent login):
+4. Configure email verification (required for password login):
+   - Set SMTP + OTP settings via environment variables or `.streamlit/secrets.toml`
+   - PowerShell example:
+     ```powershell
+     $env:SMTP_HOST="smtp.gmail.com"
+     $env:SMTP_PORT="587"
+     $env:SMTP_USERNAME="your_smtp_user"
+     $env:SMTP_PASSWORD="your_smtp_password"
+     $env:SMTP_FROM_EMAIL="no-reply@yourdomain.com"
+     $env:SMTP_USE_TLS="true"
+     $env:OTP_PEPPER="long_random_secret_value"
+     ```
+5. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)
    - Optional promo codes (validated by backend):
@@ -28,7 +40,7 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      - Use metadata URL: `https://www.linkedin.com/oauth/.well-known/openid-configuration`
      - Use scopes: `openid profile email`
    - If LinkedIn rejects `http://localhost:8501/oauth2callback`, use an HTTPS tunnel URL and set `auth.redirect_uri` to that HTTPS callback
-5. Run:
+6. Run:
    ```bash
    streamlit run app.py
    ```
@@ -82,6 +94,13 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
   GROUP BY u.email
   ORDER BY login_count DESC, u.email;
   ```
+
+## Email Verification
+- New password accounts are created with `email_verified_at = NULL`.
+- App sends a 6-digit OTP to the signup email using configured SMTP.
+- OTP records are stored in `user_email_otp_events` (hashed code, expiry, attempts, consumed time).
+- Login is blocked until `users.email_verified_at` is set.
+- OAuth users are marked verified automatically because provider identity already verifies email ownership.
 
 ## Security Baseline
 - Use strong, rotated DB passwords (no defaults in production).

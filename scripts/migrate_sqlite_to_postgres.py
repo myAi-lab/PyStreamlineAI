@@ -14,6 +14,7 @@ TABLE_ORDER = [
     "analysis_history",
     "auth_sessions",
     "user_login_events",
+    "user_email_otp_events",
     "chat_history",
     "promo_codes",
     "promo_redemptions",
@@ -88,7 +89,8 @@ def main() -> None:
         if args.truncate:
             with pg_conn.cursor() as cur:
                 cur.execute(
-                    "TRUNCATE TABLE promo_redemptions, promo_codes, chat_history, auth_sessions, "
+                    "TRUNCATE TABLE promo_redemptions, promo_codes, chat_history, user_email_otp_events, "
+                    "user_login_events, auth_sessions, "
                     "analysis_history, chat_sessions, users RESTART IDENTITY CASCADE"
                 )
 

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     years_experience TEXT,
     role_contact_email TEXT,
     profile_data TEXT,
+    email_verified_at TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -56,6 +57,17 @@ CREATE TABLE IF NOT EXISTS user_login_events (
     login_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_email_otp_events (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id),
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS promo_codes (
     id BIGSERIAL PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
@@ -84,5 +96,8 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_user_login_events_user_id ON user_login_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_login_events_login_at ON user_login_events(login_at);
+CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_user_id ON user_email_otp_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_email ON user_email_otp_events(email);
+CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_expires_at ON user_email_otp_events(expires_at);
 CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code);
 CREATE INDEX IF NOT EXISTS idx_promo_redemptions_email ON promo_redemptions(email);

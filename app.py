@@ -7,8 +7,10 @@ import os
 import re
 import secrets
 import sqlite3
+import smtplib
 import zipfile
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -32,6 +34,10 @@ USER_AVATAR = "\U0001F9D1"
 AUTH_COOKIE_NAME = "pystreamline_auth"
 AUTH_SESSION_TTL_DAYS = 14
 PBKDF2_ITERATIONS = 210000
+EMAIL_OTP_DIGITS = 6
+EMAIL_OTP_TTL_MINUTES_DEFAULT = 10
+EMAIL_OTP_RESEND_SECONDS_DEFAULT = 60
+EMAIL_OTP_MAX_ATTEMPTS_DEFAULT = 5
 PUBLIC_EMAIL_DOMAINS = {
     "gmail.com",
     "googlemail.com",
@@ -178,6 +184,44 @@ def using_postgres() -> bool:
     return db_url.startswith("postgres://") or db_url.startswith("postgresql://")
 
 
+def get_config_value(
+    env_key: str,
+    secret_section: str = "",
+    secret_key: str = "",
+    default: str = "",
+) -> str:
+    env_value = str(os.getenv(env_key, "")).strip()
+    if env_value:
+        return env_value
+
+    target_key = str(secret_key or env_key).strip()
+    try:
+        if secret_section:
+            section = st.secrets.get(secret_section)
+            if hasattr(section, "get"):
+                section_value = section.get(target_key, "")
+                return str(section_value or "").strip() or str(default or "").strip()
+        sectionless_value = st.secrets.get(target_key, "")
+        return str(sectionless_value or "").strip() or str(default or "").strip()
+    except Exception:
+        return str(default or "").strip()
+
+
+def parse_bool(raw_value: str, default: bool = False) -> bool:
+    cleaned = str(raw_value or "").strip().lower()
+    if not cleaned:
+        return default
+    return cleaned in {"1", "true", "yes", "on", "y"}
+
+
+def parse_int(raw_value: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(str(raw_value or "").strip())
+    except Exception:
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
 def db_connect() -> DBConnection:
     db_url = get_database_url()
     if not db_url:
@@ -261,6 +305,7 @@ def init_db() -> None:
             years_experience TEXT,
             role_contact_email TEXT,
             profile_data TEXT,
+            email_verified_at TEXT,
             created_at TEXT NOT NULL
         )
         """
@@ -330,6 +375,21 @@ def init_db() -> None:
     )
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS user_email_otp_events (
+            id {id_pk_sql},
+            user_id {fk_type} NOT NULL,
+            email TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS promo_codes (
             id {id_pk_sql},
             code TEXT NOT NULL UNIQUE,
@@ -355,10 +415,16 @@ def init_db() -> None:
     )
 
     user_cols = get_table_columns(conn, "users")
+    added_email_verified_col = False
     if "role_contact_email" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN role_contact_email TEXT")
     if "profile_data" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN profile_data TEXT")
+    if "email_verified_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
+        added_email_verified_col = True
+    if added_email_verified_col:
+        conn.execute("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL")
 
     chat_cols = get_table_columns(conn, "chat_history")
     if "session_id" not in chat_cols:
@@ -373,6 +439,9 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_user_id ON user_login_events(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_login_at ON user_login_events(login_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_user_id ON user_email_otp_events(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_email ON user_email_otp_events(email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_expires_at ON user_email_otp_events(expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_redemptions_email ON promo_redemptions(email)")
 
@@ -444,6 +513,287 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
     legacy_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
     return hmac.compare_digest(legacy_hash, cleaned_hash)
+
+
+def get_email_otp_pepper() -> str:
+    return get_config_value("OTP_PEPPER", "email_otp", "pepper")
+
+
+def get_email_otp_ttl_minutes() -> int:
+    return parse_int(
+        get_config_value(
+            "EMAIL_OTP_TTL_MINUTES",
+            "email_otp",
+            "ttl_minutes",
+            str(EMAIL_OTP_TTL_MINUTES_DEFAULT),
+        ),
+        EMAIL_OTP_TTL_MINUTES_DEFAULT,
+        1,
+        30,
+    )
+
+
+def get_email_otp_resend_seconds() -> int:
+    return parse_int(
+        get_config_value(
+            "EMAIL_OTP_RESEND_SECONDS",
+            "email_otp",
+            "resend_seconds",
+            str(EMAIL_OTP_RESEND_SECONDS_DEFAULT),
+        ),
+        EMAIL_OTP_RESEND_SECONDS_DEFAULT,
+        10,
+        600,
+    )
+
+
+def get_email_otp_max_attempts() -> int:
+    return parse_int(
+        get_config_value(
+            "EMAIL_OTP_MAX_ATTEMPTS",
+            "email_otp",
+            "max_attempts",
+            str(EMAIL_OTP_MAX_ATTEMPTS_DEFAULT),
+        ),
+        EMAIL_OTP_MAX_ATTEMPTS_DEFAULT,
+        1,
+        10,
+    )
+
+
+def get_smtp_settings() -> dict[str, Any]:
+    host = get_config_value("SMTP_HOST", "smtp", "host")
+    port = parse_int(
+        get_config_value("SMTP_PORT", "smtp", "port", "587"),
+        587,
+        1,
+        65535,
+    )
+    username = get_config_value("SMTP_USERNAME", "smtp", "username")
+    password = get_config_value("SMTP_PASSWORD", "smtp", "password")
+    from_email = get_config_value("SMTP_FROM_EMAIL", "smtp", "from_email")
+    use_tls = parse_bool(
+        get_config_value("SMTP_USE_TLS", "smtp", "use_tls", "true"),
+        default=True,
+    )
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "from_email": from_email,
+        "use_tls": use_tls,
+    }
+
+
+def can_send_email_otp() -> tuple[bool, str]:
+    pepper = get_email_otp_pepper()
+    if not pepper:
+        return False, "Email OTP is not configured: missing OTP_PEPPER."
+
+    smtp_cfg = get_smtp_settings()
+    if not smtp_cfg["host"] or not smtp_cfg["from_email"]:
+        return False, "Email OTP is not configured: missing SMTP host/from email."
+    if bool(smtp_cfg["username"]) != bool(smtp_cfg["password"]):
+        return False, "Email OTP is not configured: SMTP username/password must both be set."
+    return True, ""
+
+
+def hash_email_otp(otp_code: str) -> str:
+    pepper = get_email_otp_pepper()
+    if not pepper:
+        raise RuntimeError("Missing OTP_PEPPER configuration.")
+    raw = f"{str(otp_code).strip()}:{pepper}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def generate_email_otp_code() -> str:
+    upper = 10**EMAIL_OTP_DIGITS
+    return f"{secrets.randbelow(upper):0{EMAIL_OTP_DIGITS}d}"
+
+
+def send_email_otp_message(recipient_email: str, otp_code: str, ttl_minutes: int) -> tuple[bool, str]:
+    smtp_cfg = get_smtp_settings()
+    if not smtp_cfg["host"] or not smtp_cfg["from_email"]:
+        return False, "Email verification sender is not configured."
+
+    message = EmailMessage()
+    message["Subject"] = "Your PyStreamlineAI verification code"
+    message["From"] = smtp_cfg["from_email"]
+    message["To"] = recipient_email
+    message.set_content(
+        "\n".join(
+            [
+                "Use this one-time verification code for PyStreamlineAI:",
+                "",
+                otp_code,
+                "",
+                f"This code expires in {ttl_minutes} minutes.",
+                "If you did not request this, ignore this email.",
+            ]
+        )
+    )
+
+    try:
+        with smtplib.SMTP(str(smtp_cfg["host"]), int(smtp_cfg["port"]), timeout=20) as smtp:
+            if bool(smtp_cfg["use_tls"]):
+                smtp.starttls()
+            if smtp_cfg["username"] and smtp_cfg["password"]:
+                smtp.login(str(smtp_cfg["username"]), str(smtp_cfg["password"]))
+            smtp.send_message(message)
+        return True, "Verification code sent."
+    except Exception:
+        return False, "Unable to send verification email right now."
+
+
+def get_user_identity_by_email(email: str) -> dict[str, Any] | None:
+    cleaned_email = str(email or "").strip().lower()
+    if not cleaned_email:
+        return None
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT id, full_name, email, role, years_experience, created_at, email_verified_at
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (cleaned_email,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def mark_pending_email_verification(user_id: int, email: str) -> None:
+    st.session_state.email_verification_user_id = int(user_id or 0)
+    st.session_state.email_verification_email = str(email or "").strip().lower()
+
+
+def clear_pending_email_verification() -> None:
+    st.session_state.email_verification_user_id = 0
+    st.session_state.email_verification_email = ""
+
+
+def send_email_verification_otp(user_id: int, email: str) -> tuple[bool, str]:
+    cleaned_email = str(email or "").strip().lower()
+    if user_id <= 0 or not cleaned_email:
+        return False, "Email verification target is invalid."
+
+    config_ok, config_msg = can_send_email_otp()
+    if not config_ok:
+        return False, config_msg
+
+    ttl_minutes = get_email_otp_ttl_minutes()
+    resend_seconds = get_email_otp_resend_seconds()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    wait_threshold = (now - timedelta(seconds=resend_seconds)).isoformat()
+
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        recent = conn.execute(
+            """
+            SELECT created_at
+            FROM user_email_otp_events
+            WHERE user_id = ? AND email = ? AND created_at > ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id, cleaned_email, wait_threshold),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if recent is not None:
+        return False, f"Please wait {resend_seconds} seconds before requesting another code."
+
+    otp_code = generate_email_otp_code()
+    sent, send_msg = send_email_otp_message(cleaned_email, otp_code, ttl_minutes)
+    if not sent:
+        return False, send_msg
+
+    otp_hash = hash_email_otp(otp_code)
+    expires_iso = (now + timedelta(minutes=ttl_minutes)).isoformat()
+    conn = db_connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO user_email_otp_events (user_id, email, code_hash, created_at, expires_at, consumed_at, attempts)
+            VALUES (?, ?, ?, ?, ?, NULL, 0)
+            """,
+            (user_id, cleaned_email, otp_hash, now_iso, expires_iso),
+        )
+        conn.commit()
+        return True, "Verification code sent to your email."
+    finally:
+        conn.close()
+
+
+def verify_email_verification_otp(user_id: int, email: str, otp_code: str) -> tuple[bool, str]:
+    cleaned_email = str(email or "").strip().lower()
+    cleaned_code = re.sub(r"\D", "", str(otp_code or "").strip())
+    if user_id <= 0 or not cleaned_email:
+        return False, "Email verification target is invalid."
+    if len(cleaned_code) != EMAIL_OTP_DIGITS:
+        return False, f"Enter the {EMAIL_OTP_DIGITS}-digit verification code."
+
+    config_ok, config_msg = can_send_email_otp()
+    if not config_ok:
+        return False, config_msg
+
+    max_attempts = get_email_otp_max_attempts()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT id, code_hash, attempts, expires_at
+            FROM user_email_otp_events
+            WHERE user_id = ? AND email = ? AND consumed_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id, cleaned_email),
+        ).fetchone()
+        if row is None:
+            return False, "No active verification code found. Request a new code."
+
+        if str(row["expires_at"] or "") <= now_iso:
+            return False, "Verification code expired. Request a new code."
+
+        attempts = int(row["attempts"] or 0)
+        if attempts >= max_attempts:
+            return False, "Too many attempts. Request a new code."
+
+        expected_hash = hash_email_otp(cleaned_code)
+        if not hmac.compare_digest(str(row["code_hash"] or ""), expected_hash):
+            conn.execute(
+                "UPDATE user_email_otp_events SET attempts = attempts + 1 WHERE id = ?",
+                (int(row["id"]),),
+            )
+            conn.commit()
+            remaining = max(0, max_attempts - (attempts + 1))
+            if remaining <= 0:
+                return False, "Invalid code. Too many attempts. Request a new code."
+            return False, f"Invalid code. {remaining} attempts remaining."
+
+        conn.execute(
+            "UPDATE user_email_otp_events SET consumed_at = ? WHERE id = ?",
+            (now_iso, int(row["id"])),
+        )
+        conn.execute(
+            "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?",
+            (now_iso, user_id),
+        )
+        conn.commit()
+        return True, "Email verified successfully. You can now log in."
+    finally:
+        conn.close()
 
 
 def normalize_promo_code(raw_code: str) -> str:
@@ -803,7 +1153,7 @@ def create_user(
             ),
         )
         conn.commit()
-        return True, "Account created successfully. Please log in."
+        return True, "Account created successfully. Verify your email to continue."
     except Exception as ex:
         if is_unique_violation(ex):
             return False, "User exists, please login."
@@ -818,7 +1168,7 @@ def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
     try:
         row = conn.execute(
             """
-            SELECT id, full_name, email, role, years_experience, created_at, password_hash
+            SELECT id, full_name, email, role, years_experience, created_at, password_hash, email_verified_at
             FROM users
             WHERE email = ?
             """,
@@ -837,6 +1187,14 @@ def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
                 (hash_password(password), int(row["id"])),
             )
             conn.commit()
+
+        if not str(row["email_verified_at"] or "").strip():
+            return {
+                "id": int(row["id"]),
+                "full_name": str(row["full_name"]),
+                "email": str(row["email"]),
+                "pending_verification": True,
+            }
 
         return {
             "id": int(row["id"]),
@@ -940,7 +1298,7 @@ def get_user_for_auth_session(raw_token: str) -> dict[str, Any] | None:
             SELECT u.id, u.full_name, u.email, u.role, u.years_experience, u.created_at
             FROM auth_sessions s
             JOIN users u ON u.id = s.user_id
-            WHERE s.token_hash = ? AND s.expires_at > ?
+            WHERE s.token_hash = ? AND s.expires_at > ? AND u.email_verified_at IS NOT NULL
             LIMIT 1
             """,
             (token_hash, now_iso),
@@ -1157,7 +1515,7 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
     try:
         row = conn.execute(
             """
-            SELECT id, full_name, email, role, years_experience, created_at
+            SELECT id, full_name, email, role, years_experience, created_at, email_verified_at
             FROM users
             WHERE email = ?
             LIMIT 1
@@ -1165,16 +1523,32 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
             (email,),
         ).fetchone()
         if row is not None:
+            if not str(row["email_verified_at"] or "").strip():
+                now_iso = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "UPDATE users SET email_verified_at = ? WHERE id = ?",
+                    (now_iso, int(row["id"])),
+                )
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT id, full_name, email, role, years_experience, created_at, email_verified_at
+                    FROM users
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (int(row["id"]),),
+                ).fetchone()
             return dict(row)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         random_password = secrets.token_urlsafe(24)
         cur = conn.execute(
             """
-            INSERT INTO users (full_name, email, password_hash, role, years_experience, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (full_name, email, password_hash, role, years_experience, email_verified_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (full_name, email, hash_password(random_password), "", "", now_iso),
+            (full_name, email, hash_password(random_password), "", "", now_iso, now_iso),
         )
         user_id = int(cur.lastrowid or 0)
         conn.commit()
@@ -1208,6 +1582,7 @@ def sync_user_from_oauth_session() -> None:
     user_id = int(user.get("id") or 0)
     record_user_login_event(user_id, "oauth", detect_oauth_provider(identity))
     full_name = str(user.get("full_name", "")).strip()
+    clear_pending_email_verification()
     st.session_state.user = user
     st.session_state.bot_user_email = None
     st.session_state.active_chat_id = None
@@ -3030,6 +3405,8 @@ def init_state() -> None:
         "signup_success_message": "",
         "signup_warning_message": "",
         "signup_form_reset_pending": False,
+        "email_verification_user_id": 0,
+        "email_verification_email": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -3069,6 +3446,49 @@ def apply_pending_signup_form_reset() -> None:
             st.session_state[key] = ""
     st.session_state.signup_role_selector = "Candidate"
     st.session_state.signup_form_reset_pending = False
+
+
+def render_email_verification_panel() -> None:
+    pending_user_id = int(st.session_state.get("email_verification_user_id") or 0)
+    pending_email = str(st.session_state.get("email_verification_email", "")).strip().lower()
+    if pending_user_id <= 0 or not pending_email:
+        return
+
+    st.markdown("---")
+    st.caption(f"Verify your email to continue: {pending_email}")
+    otp_code = st.text_input(
+        "Email OTP",
+        key="email_verification_otp_code",
+        placeholder="Enter 6-digit code",
+        max_chars=EMAIL_OTP_DIGITS,
+    )
+    verify_col, resend_col, cancel_col = st.columns(3, gap="small")
+
+    with verify_col:
+        verify_clicked = st.button("Verify OTP", key="verify_email_otp_btn", use_container_width=True)
+    with resend_col:
+        resend_clicked = st.button("Resend OTP", key="resend_email_otp_btn", use_container_width=True)
+    with cancel_col:
+        cancel_clicked = st.button("Cancel", key="cancel_email_otp_btn", use_container_width=True)
+
+    if verify_clicked:
+        verified, verify_msg = verify_email_verification_otp(pending_user_id, pending_email, otp_code)
+        if verified:
+            clear_pending_email_verification()
+            st.success(verify_msg)
+        else:
+            st.error(verify_msg)
+
+    if resend_clicked:
+        resent, resend_msg = send_email_verification_otp(pending_user_id, pending_email)
+        if resent:
+            st.success(resend_msg)
+        else:
+            st.error(resend_msg)
+
+    if cancel_clicked:
+        clear_pending_email_verification()
+        st.info("Email verification canceled. You can restart it from login.")
 
 
 def render_auth_screen() -> None:
@@ -3178,9 +3598,20 @@ def render_auth_screen() -> None:
             if submit:
                 user = authenticate_user(email, password)
                 if user:
+                    if bool(user.get("pending_verification")):
+                        pending_user_id = int(user.get("id") or 0)
+                        pending_email = str(user.get("email") or email).strip().lower()
+                        mark_pending_email_verification(pending_user_id, pending_email)
+                        sent, otp_msg = send_email_verification_otp(pending_user_id, pending_email)
+                        if sent:
+                            st.warning("Email not verified. A verification code has been sent to your inbox.")
+                        else:
+                            st.warning(f"Email not verified. {otp_msg}")
+                        st.rerun()
                     user_id = int(user.get("id") or 0)
                     auth_token = create_auth_session(user_id)
                     record_user_login_event(user_id, "password", "local")
+                    clear_pending_email_verification()
                     st.session_state.user = user
                     full_name = str(user.get("full_name", "")).strip()
                     st.session_state.bot_user_email = None
@@ -3209,10 +3640,14 @@ def render_auth_screen() -> None:
                 st.success(signup_success_message)
                 if signup_warning_message:
                     st.warning(signup_warning_message)
-                st.info("Use the Login tab to sign in.")
+                if int(st.session_state.get("email_verification_user_id") or 0) > 0:
+                    st.info("Enter the OTP code below, then log in.")
+                else:
+                    st.info("Use the Login tab to sign in.")
                 if st.button("Create another account", key="signup_create_another_btn"):
                     st.session_state.signup_success_message = ""
                     st.session_state.signup_warning_message = ""
+                    clear_pending_email_verification()
                     clear_signup_form_state()
                     st.rerun()
             else:
@@ -3363,32 +3798,49 @@ def render_auth_screen() -> None:
                                     st.error(promo_msg)
 
                             if promo_ok:
-                                ok, msg = create_user(
-                                    full_name,
-                                    cleaned_email,
-                                    cleaned_password,
-                                    role,
-                                    normalized_years,
-                                    role_contact_email=role_contact_email,
-                                    confirm_password=cleaned_confirm_password,
-                                    profile_data=cleaned_profile_data,
-                                )
-                                if ok:
-                                    st.session_state.signup_success_message = msg
-                                    st.session_state.signup_warning_message = ""
-                                    if promo_to_redeem:
-                                        redeemed, redeem_msg = redeem_promo_code(promo_to_redeem, email)
-                                        if not redeemed:
-                                            st.session_state.signup_warning_message = (
-                                                "Account created, but promo could not be redeemed: "
-                                                f"{redeem_msg}"
-                                            )
-                                        else:
-                                            st.session_state.auth_promo_status = redeem_msg
-                                    clear_signup_form_state()
-                                    st.rerun()
+                                otp_config_ok, otp_config_msg = can_send_email_otp()
+                                if not otp_config_ok:
+                                    st.error(f"Email verification is unavailable: {otp_config_msg}")
                                 else:
-                                    st.error(msg)
+                                    ok, msg = create_user(
+                                        full_name,
+                                        cleaned_email,
+                                        cleaned_password,
+                                        role,
+                                        normalized_years,
+                                        role_contact_email=role_contact_email,
+                                        confirm_password=cleaned_confirm_password,
+                                        profile_data=cleaned_profile_data,
+                                    )
+                                    if ok:
+                                        st.session_state.signup_success_message = msg
+                                        st.session_state.signup_warning_message = ""
+                                        created_user = get_user_identity_by_email(cleaned_email)
+                                        if created_user is not None:
+                                            created_user_id = int(created_user.get("id") or 0)
+                                            mark_pending_email_verification(created_user_id, cleaned_email)
+                                            sent, otp_msg = send_email_verification_otp(created_user_id, cleaned_email)
+                                            if sent:
+                                                st.session_state.signup_success_message = (
+                                                    "Account created. We sent a verification code to your email."
+                                                )
+                                            else:
+                                                st.session_state.signup_warning_message = otp_msg
+                                        if promo_to_redeem:
+                                            redeemed, redeem_msg = redeem_promo_code(promo_to_redeem, email)
+                                            if not redeemed:
+                                                st.session_state.signup_warning_message = (
+                                                    "Account created, but promo could not be redeemed: "
+                                                    f"{redeem_msg}"
+                                                )
+                                            else:
+                                                st.session_state.auth_promo_status = redeem_msg
+                                        clear_signup_form_state()
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+
+        render_email_verification_panel()
 
 
 def logout_current_user() -> None:
@@ -3414,6 +3866,7 @@ def logout_current_user() -> None:
     st.session_state.clear_full_chat_input = False
     st.session_state.user_menu_open = False
     st.session_state.auth_session_token = None
+    clear_pending_email_verification()
     if oauth_logged_in:
         try:
             st.logout()
