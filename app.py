@@ -1229,13 +1229,22 @@ def normalize_profile_text(raw_value: Any, max_len: int = 160) -> str:
     return str(raw_value or "").strip()[:max_len]
 
 
-def validate_password_strength(password: str) -> tuple[bool, str]:
+def get_password_policy_status(password: str) -> dict[str, bool]:
     raw_password = str(password or "")
-    if len(raw_password) < 8:
+    return {
+        "min_length": len(raw_password) >= 8,
+        "has_upper": re.search(r"[A-Z]", raw_password) is not None,
+        "has_special": re.search(r"[^\w\s]", raw_password) is not None,
+    }
+
+
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    policy = get_password_policy_status(password)
+    if not policy["min_length"]:
         return False, "Password must be at least 8 characters long."
-    if re.search(r"[A-Z]", raw_password) is None:
+    if not policy["has_upper"]:
         return False, "Password must include at least one uppercase letter."
-    if re.search(r"[^\w\s]", raw_password) is None:
+    if not policy["has_special"]:
         return False, "Password must include at least one special character (for example: @ or %)."
     return True, ""
 
@@ -4141,7 +4150,23 @@ def render_auth_screen() -> None:
                         "recruiter_title": recruiter_title,
                         "hiring_focus": hiring_focus,
                     }
-                password = st.text_input("Password", type="password", key="signup_password")
+                password_col, password_status_col = st.columns([4, 2], gap="small")
+                with password_col:
+                    password = st.text_input("Password", type="password", key="signup_password")
+                with password_status_col:
+                    st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
+                    password_policy = get_password_policy_status(password)
+                    for is_ok, label in [
+                        (password_policy["min_length"], "8+ characters"),
+                        (password_policy["has_upper"], "1 uppercase letter"),
+                        (password_policy["has_special"], "1 special character"),
+                    ]:
+                        icon = "&#10003;" if is_ok else "&#10007;"
+                        color = "#16a34a" if is_ok else "#dc2626"
+                        st.markdown(
+                            f"<div style='font-size:0.82rem;color:{color};font-weight:600;'>{icon} {label}</div>",
+                            unsafe_allow_html=True,
+                        )
                 confirm_col, confirm_status_col = st.columns([4, 2], gap="small")
                 with confirm_col:
                     confirm_password = st.text_input(
@@ -4158,7 +4183,6 @@ def render_auth_screen() -> None:
                             "</span>",
                             unsafe_allow_html=True,
                         )
-                st.caption("Password must be at least 8 characters, include one uppercase letter, and one special character (for example: @ or %).")
                 submit_signup = st.button("Create Account", key="signup_submit_btn")
                 if submit_signup:
                     cleaned_first_name = str(first_name or "").strip()
