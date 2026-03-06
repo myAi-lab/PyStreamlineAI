@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
@@ -1958,6 +1959,63 @@ def get_streamlit_oauth_user_info() -> dict[str, Any]:
     return {}
 
 
+def get_oauth_redirect_uri() -> str:
+    env_redirect = str(os.getenv("AUTH_REDIRECT_URI", "")).strip()
+    if env_redirect:
+        return env_redirect
+    try:
+        auth_cfg = st.secrets.get("auth")
+        if hasattr(auth_cfg, "get"):
+            return str(auth_cfg.get("redirect_uri", "")).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def get_runtime_app_origin() -> str:
+    try:
+        headers = st.context.headers
+    except Exception:
+        headers = {}
+    host = str(headers.get("x-forwarded-host") or headers.get("host") or "").strip()
+    if not host:
+        return ""
+    proto_raw = str(headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    proto = proto_raw if proto_raw in {"http", "https"} else ""
+    if not proto:
+        proto = "http" if host.startswith("localhost") or host.startswith("127.0.0.1") else "https"
+    return f"{proto}://{host}"
+
+
+def get_expected_oauth_redirect_uri() -> str:
+    origin = get_runtime_app_origin().rstrip("/")
+    if not origin:
+        return ""
+    return f"{origin}/oauth2callback"
+
+
+def oauth_redirect_uri_mismatch() -> tuple[bool, str, str]:
+    configured = get_oauth_redirect_uri()
+    expected = get_expected_oauth_redirect_uri()
+    if not configured or not expected:
+        return False, configured, expected
+    try:
+        configured_host = str(urlsplit(configured).netloc or "").strip().lower()
+        expected_host = str(urlsplit(expected).netloc or "").strip().lower()
+    except Exception:
+        return False, configured, expected
+    if not configured_host or not expected_host:
+        return False, configured, expected
+    localhost_hosts = {"localhost", "localhost:8501", "127.0.0.1", "127.0.0.1:8501"}
+    if expected_host in localhost_hosts:
+        return False, configured, expected
+    if configured_host in localhost_hosts:
+        return True, configured, expected
+    if configured.rstrip("/") != expected.rstrip("/"):
+        return True, configured, expected
+    return False, configured, expected
+
+
 def is_streamlit_oauth_logged_in() -> bool:
     info = get_streamlit_oauth_user_info()
     if "is_logged_in" in info:
@@ -3765,15 +3823,26 @@ def render_auth_screen() -> None:
 
     with oauth_col:
         if is_streamlit_oauth_configured():
+            redirect_mismatch, configured_redirect, expected_redirect = oauth_redirect_uri_mismatch()
             google_available = is_streamlit_oauth_provider_available("google")
             linkedin_available = is_streamlit_oauth_provider_available("linkedin")
             google_provider_name = get_streamlit_oauth_provider_name("google")
             linkedin_provider_name = get_streamlit_oauth_provider_name("linkedin")
+            if redirect_mismatch:
+                google_available = False
+                linkedin_available = False
 
             st.markdown("<div style='height:2in;'></div>", unsafe_allow_html=True)
             with st.container(key="oauth_social_stack"):
                 left_space, button_col, right_space = st.columns([1,2,1], gap="large")
                 with button_col:
+                    if redirect_mismatch:
+                        st.error("OAuth redirect URI is set to localhost and cannot work on this deployed app.")
+                        if expected_redirect:
+                            st.caption(
+                                f"Update `[auth].redirect_uri` to `{expected_redirect}` "
+                                f"(current: `{configured_redirect or 'not set'}`), then redeploy."
+                            )
                     promo_enabled = promo_codes_enabled()
                     google_btn_label = (
                         "![Google](https://www.gstatic.com/images/branding/product/1x/googleg_32dp.png) "
