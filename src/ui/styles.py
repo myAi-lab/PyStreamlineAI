@@ -214,6 +214,30 @@ def render_app_styles() -> None:
             text-decoration: underline;
             text-underline-offset: 2px;
         }
+        .st-key-login_forgot_reset_btn .stButton > button,
+        .st-key-login_forgot_reset_btn button,
+        .st-key-login_forgot_reset_btn [data-testid^="baseButton"] {
+            border: 0 !important;
+            background: transparent !important;
+            color: #64748b !important;
+            min-height: auto !important;
+            padding: 0 !important;
+            font-size: 0.76rem !important;
+            font-weight: 600 !important;
+            text-decoration: none !important;
+            justify-content: flex-end !important;
+            box-shadow: none !important;
+        }
+        .st-key-login_forgot_reset_btn .stButton > button:hover,
+        .st-key-login_forgot_reset_btn button:hover,
+        .st-key-login_forgot_reset_btn [data-testid^="baseButton"]:hover {
+            color: #334155 !important;
+            text-decoration: underline !important;
+            text-underline-offset: 2px;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
         .st-key-login_submit_btn button,
         .st-key-login_submit_btn [data-testid="baseButton-primary"] {
             border: 1px solid #0284c7 !important;
