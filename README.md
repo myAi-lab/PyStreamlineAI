@@ -43,6 +43,9 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
 6. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)
+   - Set `[auth].redirect_uri` to your deployed callback URL:
+     - Local: `http://localhost:8501/oauth2callback`
+     - Streamlit Cloud: `https://YOUR-APP-NAME.streamlit.app/oauth2callback`
    - Optional promo codes (disabled by default):
      - Set `[promo].enabled = true` and add `valid_codes = ["CODE1", "CODE2"]`
    - For LinkedIn app setup:
@@ -50,7 +53,7 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      - Add your redirect URL to the app (must match `auth.redirect_uri` exactly)
      - Use metadata URL: `https://www.linkedin.com/oauth/.well-known/openid-configuration`
      - Use scopes: `openid profile email`
-   - If LinkedIn rejects `http://localhost:8501/oauth2callback`, use an HTTPS tunnel URL and set `auth.redirect_uri` to that HTTPS callback
+   - If Google/LinkedIn rejects localhost callback, use your HTTPS app URL (or HTTPS tunnel) and set `auth.redirect_uri` to that callback
 7. Run:
    ```bash
    streamlit run app.py
