@@ -3887,20 +3887,28 @@ def render_auth_screen() -> None:
                         with st.container(key="login_form_center"):
                             email = st.text_input("Email")
                             password = st.text_input("Password", type="password")
+                            open_reset = False
                             with st.container(key="login_forgot_row"):
-                                st.markdown(
-                                    """
-                                    <div class="auth-forgot-row">
-                                        <span class="auth-forgot-label">Don't remember your password?</span>
-                                        <a class="auth-forgot-reset" href="?auth=login&pwreset=1">Reset</a>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True,
-                                )
+                                forgot_label_col, forgot_reset_col = st.columns([7, 3], gap="small")
+                                with forgot_label_col:
+                                    st.markdown(
+                                        '<div class="auth-forgot-label">Don\'t remember your password?</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with forgot_reset_col:
+                                    with st.container(key="login_forgot_reset_btn"):
+                                        open_reset = st.form_submit_button(
+                                            "Reset",
+                                            use_container_width=False,
+                                        )
                             with st.container(key="login_actions"):
                                 with st.container(key="login_submit_btn"):
                                     submit = st.form_submit_button("Login", use_container_width=False, type="primary")
             login_email_prefill = str(email or "").strip().lower()
+            if open_reset:
+                st.session_state.password_reset_flow_open = True
+                sync_password_reset_query_param(False)
+                st.rerun()
             if read_password_reset_from_query_params():
                 st.session_state.password_reset_flow_open = True
             if bool(st.session_state.get("password_reset_flow_open")) and login_email_prefill:
