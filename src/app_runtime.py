@@ -501,7 +501,17 @@ def init_db() -> None:
             years_experience TEXT,
             role_contact_email TEXT,
             profile_data TEXT,
+            account_status TEXT NOT NULL DEFAULT 'active',
+            auth_provider TEXT,
+            auth_provider_user_id TEXT,
+            timezone TEXT,
+            locale TEXT,
             email_verified_at TEXT,
+            last_login_at TEXT,
+            onboarding_completed_at TEXT,
+            terms_accepted_at TEXT,
+            privacy_accepted_at TEXT,
+            updated_at TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
         """
@@ -666,9 +676,31 @@ def init_db() -> None:
         conn.execute("ALTER TABLE users ADD COLUMN role_contact_email TEXT")
     if "profile_data" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN profile_data TEXT")
+    if "account_status" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN account_status TEXT")
+        conn.execute("UPDATE users SET account_status = 'active' WHERE account_status IS NULL OR account_status = ''")
+    if "auth_provider" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT")
+    if "auth_provider_user_id" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_provider_user_id TEXT")
+    if "timezone" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN timezone TEXT")
+    if "locale" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN locale TEXT")
     if "email_verified_at" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN email_verified_at TEXT")
         added_email_verified_col = True
+    if "last_login_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
+    if "onboarding_completed_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN onboarding_completed_at TEXT")
+    if "terms_accepted_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN terms_accepted_at TEXT")
+    if "privacy_accepted_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN privacy_accepted_at TEXT")
+    if "updated_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN updated_at TEXT")
+        conn.execute("UPDATE users SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''")
     if added_email_verified_col:
         conn.execute("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL")
 
@@ -691,6 +723,8 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_user_id ON user_login_events(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_login_at ON user_login_events(login_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_account_status ON users(account_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_auth_provider_user_id ON users(auth_provider, auth_provider_user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_user_id ON user_email_otp_events(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_email ON user_email_otp_events(email)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_expires_at ON user_email_otp_events(expires_at)")
@@ -1181,9 +1215,9 @@ def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[b
                 """
                 INSERT INTO users (
                     full_name, email, password_hash, role, years_experience, role_contact_email, profile_data,
-                    email_verified_at, created_at
+                    account_status, email_verified_at, updated_at, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(request.get("full_name", "")).strip() or email.split("@")[0],
@@ -1193,14 +1227,16 @@ def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[b
                     str(request.get("years_experience", "")).strip(),
                     str(request.get("role_contact_email", "")).strip() or None,
                     str(request.get("profile_data", "")).strip() or None,
+                    "active",
+                    now_iso,
                     now_iso,
                     str(request.get("created_at", "")).strip() or now_iso,
                 ),
             )
         else:
             conn.execute(
-                "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE email = ?",
-                (now_iso, email),
+                "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?), updated_at = ? WHERE email = ?",
+                (now_iso, now_iso, email),
             )
         conn.commit()
     except Exception as ex:
@@ -1463,8 +1499,8 @@ def verify_email_verification_otp(user_id: int, email: str, otp_code: str) -> tu
             (now_iso, int(row["id"])),
         )
         conn.execute(
-            "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?",
-            (now_iso, user_id),
+            "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?), updated_at = ? WHERE id = ?",
+            (now_iso, now_iso, user_id),
         )
         conn.commit()
         return True, "Email verified successfully. You can now log in."
@@ -1868,9 +1904,9 @@ def create_user(
         conn.execute(
             """
             INSERT INTO users (
-                full_name, email, password_hash, role, years_experience, role_contact_email, profile_data, created_at
+                full_name, email, password_hash, role, years_experience, role_contact_email, profile_data, account_status, updated_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 full_name.strip(),
@@ -1880,6 +1916,8 @@ def create_user(
                 cleaned_years_experience,
                 role_contact_value,
                 profile_payload,
+                "active",
+                datetime.now(timezone.utc).isoformat(),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -2272,6 +2310,15 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
     if not email:
         return None
 
+    oauth_provider = detect_oauth_provider(identity)
+    provider_user_id = str(
+        identity.get("sub")
+        or identity.get("id")
+        or identity.get("user_id")
+        or identity.get("uid")
+        or ""
+    ).strip() or None
+
     full_name = str(identity.get("name", "")).strip()
     if not full_name:
         given = str(identity.get("given_name", "")).strip()
@@ -2293,32 +2340,54 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
             (email,),
         ).fetchone()
         if row is not None:
-            if not str(row["email_verified_at"] or "").strip():
-                now_iso = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    "UPDATE users SET email_verified_at = ? WHERE id = ?",
-                    (now_iso, int(row["id"])),
-                )
-                conn.commit()
-                row = conn.execute(
-                    """
-                    SELECT id, full_name, email, role, years_experience, created_at, email_verified_at
-                    FROM users
-                    WHERE id = ?
-                    LIMIT 1
-                    """,
-                    (int(row["id"]),),
-                ).fetchone()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """
+                UPDATE users
+                SET
+                    email_verified_at = COALESCE(email_verified_at, ?),
+                    auth_provider = COALESCE(auth_provider, ?),
+                    auth_provider_user_id = COALESCE(auth_provider_user_id, ?),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now_iso, oauth_provider or None, provider_user_id, now_iso, int(row["id"])),
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT id, full_name, email, role, years_experience, created_at, email_verified_at
+                FROM users
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(row["id"]),),
+            ).fetchone()
             return dict(row)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         random_password = secrets.token_urlsafe(24)
         cur = conn.execute(
             """
-            INSERT INTO users (full_name, email, password_hash, role, years_experience, email_verified_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (
+                full_name, email, password_hash, role, years_experience,
+                account_status, auth_provider, auth_provider_user_id, email_verified_at, updated_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (full_name, email, hash_password(random_password), "", "", now_iso, now_iso),
+            (
+                full_name,
+                email,
+                hash_password(random_password),
+                "",
+                "",
+                "active",
+                oauth_provider or None,
+                provider_user_id,
+                now_iso,
+                now_iso,
+                now_iso,
+            ),
         )
         user_id = int(cur.lastrowid or 0)
         conn.commit()

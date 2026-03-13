@@ -41,9 +41,10 @@ class AuthRepository:
                 return None
 
             if not is_modern_password_hash(stored_hash):
+                now_iso = datetime.now(timezone.utc).isoformat()
                 conn.execute(
-                    "UPDATE users SET password_hash = ? WHERE id = ?",
-                    (hash_password(str(password or "")), int(row["id"])),
+                    "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                    (hash_password(str(password or "")), now_iso, int(row["id"])),
                 )
                 conn.commit()
 
@@ -99,11 +100,12 @@ class AuthRepository:
     def update_password_and_revoke_sessions(self, user_id: int, password_hash: str) -> None:
         if int(user_id or 0) <= 0:
             return
+        now_iso = datetime.now(timezone.utc).isoformat()
         conn = self._db_connect()
         try:
             conn.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
-                (str(password_hash or ""), int(user_id)),
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (str(password_hash or ""), now_iso, int(user_id)),
             )
             conn.execute("DELETE FROM auth_sessions WHERE user_id = ?", (int(user_id),))
             conn.commit()
@@ -124,6 +126,10 @@ class AuthRepository:
                 VALUES (?, ?, ?, ?)
                 """,
                 (int(user_id), method, provider or None, now_iso),
+            )
+            conn.execute(
+                "UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?",
+                (now_iso, now_iso, int(user_id)),
             )
             conn.commit()
         finally:
@@ -165,4 +171,3 @@ class AuthRepository:
             conn.commit()
         finally:
             conn.close()
-
