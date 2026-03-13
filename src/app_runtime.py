@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import base64
 import hmac
 import html
@@ -11,11 +11,15 @@ import sqlite3
 import smtplib
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
@@ -92,6 +96,40 @@ AI_WORKSPACE_FILE_TYPES = [
     "log",
 ]
 AI_WORKSPACE_FILE_MAX_CHARS = 12000
+JOB_SEARCH_MAX_RESULTS_DEFAULT = 5
+JOB_SEARCH_MAX_RESULTS_LIMIT = 15
+JOB_SEARCH_FETCH_CACHE_TTL_SECONDS = 300
+JOB_SEARCH_API_TIMEOUT_SECONDS = 12
+JOB_SEARCH_SCORING_MAX_WORKERS = 4
+JOB_SEARCH_MAX_AI_EVALUATIONS = 8
+JOB_SEARCH_POSTED_WITHIN_OPTIONS: list[tuple[str, int]] = [
+    ("Anytime", 0),
+    ("Past 24 hours", 1),
+    ("Past 3 days", 3),
+    ("Past 7 days", 7),
+    ("Past 14 days", 14),
+    ("Past 30 days", 30),
+]
+JOB_SEARCH_PROVIDER_OPTIONS = [
+    "Adzuna",
+    "Remotive",
+    "USAJobs",
+]
+JOB_SEARCH_VISA_STATUSES = [
+    "US Citizen / Green Card",
+    "H-1B",
+    "F-1 OPT / CPT",
+    "L-1",
+    "TN",
+    "Other visa status",
+]
+JOB_POSITION_FILTER_OPTIONS = [
+    "Full-Time",
+    "Contract",
+    "W2",
+    "C2C",
+    "Part-Time",
+]
 PUBLIC_EMAIL_DOMAINS = {
     "gmail.com",
     "googlemail.com",
@@ -483,6 +521,23 @@ def init_db() -> None:
     )
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS job_search_history (
+            id {id_pk_sql},
+            user_id {fk_type} NOT NULL,
+            source_profile TEXT NOT NULL DEFAULT 'Adzuna',
+            role_query TEXT NOT NULL,
+            preferred_location TEXT,
+            visa_status TEXT,
+            sponsorship_required INTEGER NOT NULL DEFAULT 0,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            results_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS chat_history (
             id {id_pk_sql},
             user_id {fk_type} NOT NULL,
@@ -620,8 +675,14 @@ def init_db() -> None:
     chat_cols = get_table_columns(conn, "chat_history")
     if "session_id" not in chat_cols:
         conn.execute(f"ALTER TABLE chat_history ADD COLUMN session_id {session_id_type}")
+    job_search_cols = get_table_columns(conn, "job_search_history")
+    if "source_profile" not in job_search_cols:
+        conn.execute("ALTER TABLE job_search_history ADD COLUMN source_profile TEXT")
+        conn.execute("UPDATE job_search_history SET source_profile = 'Adzuna' WHERE source_profile IS NULL")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_history_user_id ON analysis_history(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_search_history_user_id ON job_search_history(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_search_history_created_at ON job_search_history(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id)")
@@ -2305,6 +2366,22 @@ def sync_user_from_oauth_session() -> None:
     st.session_state.dashboard_view = "home"
     st.session_state.user_menu_open = False
     st.session_state.auth_session_token = None
+    st.session_state.job_search_results = []
+    st.session_state.job_search_last_error = ""
+    st.session_state.job_search_role_query = ""
+    st.session_state.job_search_preferred_location = ""
+    st.session_state.job_search_visa_status = JOB_SEARCH_VISA_STATUSES[0]
+    st.session_state.job_search_sponsorship_required = False
+    st.session_state.job_search_position_types = []
+    st.session_state.job_search_max_results = JOB_SEARCH_MAX_RESULTS_DEFAULT
+    st.session_state.job_search_posted_within_days = 0
+    st.session_state.careers_use_custom_profile = False
+    st.session_state.careers_input_mode = "Resume + JD"
+    st.session_state.careers_resume_text = ""
+    st.session_state.careers_resume_file_name = ""
+    st.session_state.careers_target_job_description = ""
+    st.session_state.careers_target_job_description_input = ""
+    st.session_state.careers_profile_status = ""
 
 
 def save_analysis_history(user_id: int, result: dict[str, Any]) -> None:
@@ -2349,6 +2426,1061 @@ def get_recent_analysis_history(user_id: int, limit: int = 5) -> list[dict[str, 
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def save_job_search_history(
+    user_id: int,
+    source_profile: str,
+    role_query: str,
+    preferred_location: str,
+    visa_status: str,
+    sponsorship_required: bool,
+    results: list[dict[str, Any]],
+) -> None:
+    if user_id <= 0:
+        return
+    safe_results: list[dict[str, Any]] = []
+    for item in (results or [])[:JOB_SEARCH_MAX_RESULTS_LIMIT]:
+        raw_position_tags = item.get("position_tags", [])
+        if not isinstance(raw_position_tags, list):
+            raw_position_tags = []
+        safe_results.append(
+            {
+                "title": str(item.get("title", "")).strip()[:180],
+                "company": str(item.get("company", "")).strip()[:180],
+                "location": str(item.get("location", "")).strip()[:180],
+                "source": str(item.get("source", "")).strip()[:40],
+                "overall_score": int(item.get("overall_score", 0) or 0),
+                "sponsorship_status": str(item.get("sponsorship_status", "")).strip()[:80],
+                "position_tags": [str(tag).strip()[:20] for tag in raw_position_tags[:5]],
+                "apply_url": str(item.get("apply_url", "")).strip()[:1200],
+            }
+        )
+    payload = json.dumps(safe_results, ensure_ascii=True)
+    conn = db_connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO job_search_history (
+                user_id,
+                source_profile,
+                role_query,
+                preferred_location,
+                visa_status,
+                sponsorship_required,
+                result_count,
+                results_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(user_id),
+                str(source_profile or "").strip()[:40] or "Adzuna",
+                str(role_query or "").strip()[:220],
+                str(preferred_location or "").strip()[:220],
+                str(visa_status or "").strip()[:80],
+                1 if sponsorship_required else 0,
+                len(safe_results),
+                payload[:120000],
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_job_search_history(user_id: int, limit: int = 8) -> list[dict[str, Any]]:
+    if user_id <= 0:
+        return []
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT source_profile, role_query, preferred_location, visa_status, sponsorship_required, result_count, created_at
+            FROM job_search_history
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, max(1, int(limit or 1))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_adzuna_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    app_id = get_config_value("ADZUNA_APP_ID", "jobs", "adzuna_app_id", "")
+    app_key = get_config_value("ADZUNA_APP_KEY", "jobs", "adzuna_app_key", "")
+    country = get_config_value("ADZUNA_COUNTRY", "jobs", "adzuna_country", "us").strip().lower() or "us"
+    if not app_id or not app_key:
+        return (
+            [],
+            "Set ADZUNA_APP_ID and ADZUNA_APP_KEY in environment/secrets to fetch live jobs.",
+        )
+
+    safe_role = " ".join(str(role_query or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching jobs."
+    safe_where = " ".join(str(preferred_location or "").split())
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    params = {
+        "app_id": app_id,
+        "app_key": app_key,
+        "results_per_page": str(limit),
+        "what": safe_role,
+        "sort_by": "date",
+        "content-type": "application/json",
+    }
+    if safe_where:
+        params["where"] = safe_where
+
+    request_url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{urlencode(params)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except HTTPError as ex:
+        return [], f"Job API error ({int(ex.code)}). Check Adzuna credentials/country and retry."
+    except URLError:
+        return [], "Job API connection failed. Check network access and retry."
+    except Exception:
+        return [], "Could not parse the job API response."
+
+    items = payload.get("results", [])
+    if not isinstance(items, list):
+        items = []
+
+    jobs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        company_obj = item.get("company", {}) or {}
+        location_obj = item.get("location", {}) or {}
+        location_parts = location_obj.get("display_name")
+        location_text = str(location_parts or "").strip()
+        if not location_text:
+            area_values = location_obj.get("area")
+            if isinstance(area_values, list):
+                location_text = ", ".join(str(part).strip() for part in area_values if str(part).strip())
+        title = str(item.get("title", "")).strip()
+        description = str(item.get("description", "")).strip()
+        if not title:
+            continue
+        jobs.append(
+            {
+                "title": title,
+                "company": str(company_obj.get("display_name", "")).strip() or "Unknown company",
+                "location": location_text or "Location not listed",
+                "description": description,
+                "apply_url": str(item.get("redirect_url", "")).strip(),
+                "source": "Adzuna",
+                "employment_type": str(item.get("contract_time", "")).strip(),
+                "contract_type": str(item.get("contract_type", "")).strip(),
+                "posted_at": normalize_posted_at(item.get("created")),
+            }
+        )
+    if not jobs:
+        return [], "No jobs matched the current role/location filter."
+    return jobs, ""
+
+
+def strip_html_tags(raw_text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def get_posted_within_label(days: int) -> str:
+    for label, value in JOB_SEARCH_POSTED_WITHIN_OPTIONS:
+        if int(value) == int(days or 0):
+            return label
+    return "Anytime"
+
+
+def parse_job_posted_datetime(raw_value: Any) -> datetime | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        parsed = None
+    if parsed is None:
+        known_formats = (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+        )
+        for fmt in known_formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except Exception:
+                continue
+    if parsed is None:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def normalize_posted_at(raw_value: Any) -> str:
+    parsed = parse_job_posted_datetime(raw_value)
+    if parsed is None:
+        return ""
+    return parsed.isoformat()
+
+
+def is_posted_within_days(posted_at: str, max_days: int) -> bool:
+    days = max(0, int(max_days or 0))
+    if days <= 0:
+        return True
+    parsed = parse_job_posted_datetime(posted_at)
+    if parsed is None:
+        return False
+    age = datetime.now(timezone.utc) - parsed
+    return timedelta(0) <= age <= timedelta(days=days)
+
+
+def format_posted_age(posted_at: str) -> str:
+    parsed = parse_job_posted_datetime(posted_at)
+    if parsed is None:
+        return "Posted date not listed"
+    age = datetime.now(timezone.utc) - parsed
+    if age < timedelta(0):
+        return "Recently posted"
+    if age < timedelta(hours=1):
+        mins = max(1, int(age.total_seconds() // 60))
+        return f"Posted {mins} min ago"
+    if age < timedelta(days=1):
+        hours = max(1, int(age.total_seconds() // 3600))
+        return f"Posted {hours} hour ago" if hours == 1 else f"Posted {hours} hours ago"
+    days = age.days
+    return f"Posted {days} day ago" if days == 1 else f"Posted {days} days ago"
+
+
+def fetch_remotive_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    params = {
+        "search": safe_role,
+        "limit": str(limit),
+    }
+    request_url = f"https://remotive.com/api/remote-jobs?{urlencode(params)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except HTTPError as ex:
+        return [], f"Remotive API error ({int(ex.code)})."
+    except URLError:
+        return [], "Remotive API connection failed. Check network access and retry."
+    except Exception:
+        return [], "Could not parse Remotive API response."
+
+    items = payload.get("jobs", [])
+    if not isinstance(items, list):
+        items = []
+
+    preferred = str(preferred_location or "").strip().lower()
+    jobs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        if not title:
+            continue
+        location = str(item.get("candidate_required_location", "")).strip() or "Remote"
+        if preferred and preferred not in location.lower() and "remote" not in location.lower():
+            continue
+        description = strip_html_tags(str(item.get("description", "")))
+        jobs.append(
+            {
+                "title": title,
+                "company": str(item.get("company_name", "")).strip() or "Unknown company",
+                "location": location,
+                "description": description,
+                "apply_url": str(item.get("url", "")).strip(),
+                "source": "Remotive",
+                "employment_type": str(item.get("job_type", "")).strip(),
+                "contract_type": str(item.get("job_type", "")).strip(),
+                "posted_at": normalize_posted_at(item.get("publication_date")),
+            }
+        )
+        if len(jobs) >= limit:
+            break
+    if not jobs:
+        return [], "No Remotive jobs matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_usajobs_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    auth_key = get_config_value("USAJOBS_AUTH_KEY", "jobs", "usajobs_auth_key", "")
+    user_agent = get_config_value("USAJOBS_USER_AGENT", "jobs", "usajobs_user_agent", "")
+    if not auth_key or not user_agent:
+        return (
+            [],
+            "Set USAJOBS_AUTH_KEY and USAJOBS_USER_AGENT in env/secrets to use USAJobs source.",
+        )
+
+    safe_role = " ".join(str(role_query or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching jobs."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+
+    params = {
+        "Keyword": safe_role,
+        "ResultsPerPage": str(limit),
+    }
+    safe_where = " ".join(str(preferred_location or "").split())
+    if safe_where:
+        params["LocationName"] = safe_where
+
+    request_url = f"https://data.usajobs.gov/api/Search?{urlencode(params)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "Authorization-Key": auth_key,
+            "Host": "data.usajobs.gov",
+            "User-Agent": user_agent,
+        },
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except HTTPError as ex:
+        return [], f"USAJobs API error ({int(ex.code)}). Check credentials and header values."
+    except URLError:
+        return [], "USAJobs API connection failed. Check network access and retry."
+    except Exception:
+        return [], "Could not parse USAJobs API response."
+
+    search_result = payload.get("SearchResult", {}) if isinstance(payload, dict) else {}
+    raw_items = search_result.get("SearchResultItems", []) if isinstance(search_result, dict) else []
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    jobs: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        descriptor = item.get("MatchedObjectDescriptor", {}) or {}
+        title = str(descriptor.get("PositionTitle", "")).strip()
+        if not title:
+            continue
+        positions = descriptor.get("PositionLocation", [])
+        location = "Location not listed"
+        if isinstance(positions, list) and positions:
+            first_loc = positions[0]
+            if isinstance(first_loc, dict):
+                location = str(first_loc.get("LocationName", "")).strip() or location
+        job_summary = ""
+        user_area = descriptor.get("UserArea", {}) or {}
+        if isinstance(user_area, dict):
+            details = user_area.get("Details", {}) or {}
+            if isinstance(details, dict):
+                job_summary = str(details.get("JobSummary", "")).strip()
+        apply_url = ""
+        apply_list = descriptor.get("ApplyURI", [])
+        if isinstance(apply_list, list) and apply_list:
+            apply_url = str(apply_list[0]).strip()
+        posted_at = ""
+        for candidate in (
+            descriptor.get("PublicationStartDate"),
+            descriptor.get("PositionStartDate"),
+            descriptor.get("PositionEndDate"),
+            details.get("PublicationStartDate") if isinstance(details, dict) else "",
+            details.get("PositionStartDate") if isinstance(details, dict) else "",
+            details.get("PositionEndDate") if isinstance(details, dict) else "",
+        ):
+            normalized_candidate = normalize_posted_at(candidate)
+            if normalized_candidate:
+                posted_at = normalized_candidate
+                break
+
+        jobs.append(
+            {
+                "title": title,
+                "company": str(descriptor.get("OrganizationName", "")).strip() or "US Government",
+                "location": location,
+                "description": strip_html_tags(job_summary),
+                "apply_url": apply_url,
+                "source": "USAJobs",
+                "employment_type": strip_html_tags(json.dumps(descriptor.get("PositionSchedule", []))),
+                "contract_type": strip_html_tags(json.dumps(descriptor.get("PositionOfferingType", []))),
+                "posted_at": posted_at,
+            }
+        )
+    if not jobs:
+        return [], "No USAJobs roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_jobs_from_all_sources(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    target_count = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    provider_count = max(1, len(JOB_SEARCH_PROVIDER_OPTIONS))
+    per_provider_limit = max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(target_count / provider_count) + 2))
+
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    adzuna_app_id = get_config_value("ADZUNA_APP_ID", "jobs", "adzuna_app_id", "")
+    adzuna_app_key = get_config_value("ADZUNA_APP_KEY", "jobs", "adzuna_app_key", "")
+    adzuna_country = get_config_value("ADZUNA_COUNTRY", "jobs", "adzuna_country", "us").strip().lower() or "us"
+    usajobs_auth_key = get_config_value("USAJOBS_AUTH_KEY", "jobs", "usajobs_auth_key", "")
+    usajobs_user_agent = get_config_value("USAJOBS_USER_AGENT", "jobs", "usajobs_user_agent", "")
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+
+    cached_jobs, message = _fetch_jobs_from_all_sources_cached(
+        role_query=safe_role,
+        preferred_location=safe_location,
+        target_count=target_count,
+        per_provider_limit=per_provider_limit,
+        adzuna_enabled=bool(adzuna_app_id and adzuna_app_key),
+        adzuna_country=adzuna_country,
+        usajobs_enabled=bool(usajobs_auth_key and usajobs_user_agent),
+        cache_bucket=cache_bucket,
+    )
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], message
+
+
+@lru_cache(maxsize=96)
+def _fetch_jobs_from_all_sources_cached(
+    role_query: str,
+    preferred_location: str,
+    target_count: int,
+    per_provider_limit: int,
+    adzuna_enabled: bool,
+    adzuna_country: str,
+    usajobs_enabled: bool,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = (adzuna_country, cache_bucket)
+
+    provider_fetchers: list[tuple[str, Any]] = [("Remotive", fetch_remotive_jobs)]
+    if adzuna_enabled:
+        provider_fetchers.insert(0, ("Adzuna", fetch_adzuna_jobs))
+    if usajobs_enabled:
+        provider_fetchers.append(("USAJobs", fetch_usajobs_jobs))
+
+    aggregated: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, len(provider_fetchers))) as executor:
+        future_map = {
+            executor.submit(fetcher, role_query, preferred_location, max_results=per_provider_limit): provider
+            for provider, fetcher in provider_fetchers
+        }
+        for future in as_completed(future_map):
+            try:
+                jobs, _ = future.result()
+            except Exception:
+                continue
+            if isinstance(jobs, list) and jobs:
+                aggregated.extend(job for job in jobs if isinstance(job, dict))
+
+    seen: set[tuple[str, str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for job in aggregated:
+        title = str(job.get("title", "")).strip().lower()
+        company = str(job.get("company", "")).strip().lower()
+        location = str(job.get("location", "")).strip().lower()
+        apply_url = str(job.get("apply_url", "")).strip().lower()
+        key = (title, company, location, apply_url)
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(job)
+
+    if not deduped:
+        return tuple(), "No jobs found for this search. Try broadening role, location, or filters."
+
+    pool_limit = min(len(deduped), max(target_count, target_count + 4))
+    return tuple(dict(item) for item in deduped[:pool_limit] if isinstance(item, dict)), ""
+
+
+def infer_job_position_tags(job_row: dict[str, Any]) -> list[str]:
+    title = str(job_row.get("title", "")).strip().lower()
+    description = str(job_row.get("description", "")).strip().lower()
+    employment_type = str(job_row.get("employment_type", "")).strip().lower()
+    contract_type = str(job_row.get("contract_type", "")).strip().lower()
+    text = " ".join([title, description, employment_type, contract_type])
+
+    tags: list[str] = []
+
+    full_time_signals = ("full time", "full-time", "full_time", "permanent")
+    contract_signals = ("contract", "contractor", "contract-to-hire", "contract to hire")
+    part_time_signals = ("part time", "part-time", "part_time")
+    w2_signals = ("w2", "w-2", "w 2", "on w2", "w2 only")
+    c2c_signals = ("c2c", "corp to corp", "corp-to-corp", "1099")
+
+    if any(token in text for token in full_time_signals):
+        tags.append("Full-Time")
+    if any(token in text for token in contract_signals):
+        tags.append("Contract")
+    if any(token in text for token in part_time_signals):
+        tags.append("Part-Time")
+    if any(token in text for token in w2_signals):
+        tags.append("W2")
+    if any(token in text for token in c2c_signals):
+        tags.append("C2C")
+
+    deduped_tags: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        cleaned = str(tag).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        deduped_tags.append(cleaned)
+    return deduped_tags
+
+
+def filter_jobs_by_position_types(
+    raw_jobs: list[dict[str, Any]],
+    selected_types: list[str],
+) -> tuple[list[dict[str, Any]], str]:
+    cleaned_selected = [str(item).strip() for item in (selected_types or []) if str(item).strip()]
+    if not cleaned_selected:
+        enriched: list[dict[str, Any]] = []
+        for job in raw_jobs:
+            if not isinstance(job, dict):
+                continue
+            tags = infer_job_position_tags(job)
+            job_copy = dict(job)
+            job_copy["position_tags"] = tags
+            enriched.append(job_copy)
+        return enriched, ""
+
+    selected_set = set(cleaned_selected)
+    filtered: list[dict[str, Any]] = []
+    for job in raw_jobs:
+        if not isinstance(job, dict):
+            continue
+        tags = infer_job_position_tags(job)
+        if not tags:
+            continue
+        if not any(tag in selected_set for tag in tags):
+            continue
+        job_copy = dict(job)
+        job_copy["position_tags"] = tags
+        filtered.append(job_copy)
+    if not filtered:
+        return [], "No jobs matched the selected position type filters."
+    return filtered, ""
+
+
+def filter_jobs_by_posted_within(
+    raw_jobs: list[dict[str, Any]],
+    posted_within_days: int,
+) -> tuple[list[dict[str, Any]], str]:
+    max_days = max(0, int(posted_within_days or 0))
+    cleaned_jobs = [dict(job) for job in raw_jobs if isinstance(job, dict)]
+    if max_days <= 0:
+        return cleaned_jobs, ""
+
+    filtered: list[dict[str, Any]] = []
+    for job in cleaned_jobs:
+        posted_at = str(job.get("posted_at", "")).strip()
+        if is_posted_within_days(posted_at, max_days):
+            filtered.append(job)
+    if not filtered:
+        day_label = "day" if max_days == 1 else "days"
+        return [], f"No jobs were posted in the last {max_days} {day_label}. Try widening the posted-date filter."
+    return filtered, ""
+
+
+def sanitize_job_search_error_message(message: str) -> str:
+    raw = str(message or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    source_markers = (
+        "some sources were unavailable",
+        "remotive:",
+        "usajobs:",
+        "adzuna:",
+        "no remotive jobs matched",
+        "no usajobs roles matched",
+        "source",
+        "unavailable",
+    )
+    if any(marker in lowered for marker in source_markers):
+        return "No jobs found for this search. Try broadening role, location, or filters."
+    return raw
+
+
+def build_application_confidence_snapshot(
+    role_query: str,
+    preferred_location: str,
+    selected_position_types: list[str],
+    sponsorship_required: bool,
+    resume_text: str,
+    target_job_description: str,
+) -> dict[str, Any]:
+    analysis_score = get_careers_analysis_score(resume_text, target_job_description)
+    has_resume = bool(str(resume_text or "").strip())
+    has_jd = bool(str(target_job_description or "").strip())
+    has_role = bool(str(role_query or "").strip())
+    has_location = bool(str(preferred_location or "").strip())
+    selected_types = [str(item).strip() for item in (selected_position_types or []) if str(item).strip()]
+    has_position_type = bool(selected_types)
+
+    confidence = int(round(analysis_score * 0.62))
+    if has_resume:
+        confidence += 10
+    if has_jd:
+        confidence += 8
+    if has_role:
+        confidence += 8
+    if has_location:
+        confidence += 5
+    if has_position_type:
+        confidence += 5
+    if sponsorship_required and analysis_score < 65:
+        confidence -= 6
+    confidence = max(0, min(100, confidence))
+
+    if confidence >= 80:
+        band = "High"
+        summary = "Strong profile and filters. Proceed with confident applications."
+    elif confidence >= 60:
+        band = "Medium"
+        summary = "Good readiness. Tighten filters and resume alignment for better outcomes."
+    else:
+        band = "Build-Up"
+        summary = "Add role-specific details and refine filters before mass applying."
+
+    next_steps: list[str] = []
+    if not has_role:
+        next_steps.append("Set a precise target role.")
+    if not has_location:
+        next_steps.append("Set a preferred location or Remote.")
+    if not has_position_type:
+        next_steps.append("Pick position types like Full-Time or Contract.")
+    if sponsorship_required:
+        next_steps.append("Prioritize jobs with clear sponsorship wording.")
+    if not next_steps:
+        next_steps.append("Use Find My Best Matches and apply to top readiness roles first.")
+
+    return {
+        "score": confidence,
+        "band": band,
+        "summary": summary,
+        "next_steps": next_steps[:2],
+        "analysis_score": analysis_score,
+    }
+
+
+def render_application_confidence_card(
+    role_query: str,
+    preferred_location: str,
+    selected_position_types: list[str],
+    sponsorship_required: bool,
+    resume_text: str,
+    target_job_description: str,
+) -> None:
+    snapshot = build_application_confidence_snapshot(
+        role_query=role_query,
+        preferred_location=preferred_location,
+        selected_position_types=selected_position_types,
+        sponsorship_required=sponsorship_required,
+        resume_text=resume_text,
+        target_job_description=target_job_description,
+    )
+    score = int(snapshot.get("score", 0) or 0)
+    band = str(snapshot.get("band", "Medium")).strip()
+    summary = str(snapshot.get("summary", "")).strip()
+    analysis_score = int(snapshot.get("analysis_score", 0) or 0)
+    next_steps = snapshot.get("next_steps", [])
+    if not isinstance(next_steps, list):
+        next_steps = []
+    next_line = " ".join(str(item).strip() for item in next_steps if str(item).strip())
+    if not next_line:
+        next_line = "Use Find My Best Matches and apply to top readiness roles first."
+
+    band_color = "#0ea5e9"
+    if band == "High":
+        band_color = "#16a34a"
+    elif band == "Build-Up":
+        band_color = "#ea580c"
+
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid #c7d2fe;
+            border-radius:14px;
+            padding:0.62rem 0.74rem;
+            background:linear-gradient(140deg,#0b1220 0%, #111f36 68%, #0f2a48 100%);
+            color:#e2e8f0;
+            margin:0.3rem auto 0.8rem auto;
+            max-width:780px;
+        ">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;">
+                <div style="font-size:0.78rem;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#a5f3fc;">
+                    Application Confidence
+                </div>
+                <div style="
+                    font-size:0.68rem;
+                    font-weight:700;
+                    background:{band_color};
+                    color:#ffffff;
+                    border-radius:999px;
+                    padding:0.2rem 0.55rem;
+                    white-space:nowrap;
+                ">
+                    {html.escape(band)} Mode
+                </div>
+            </div>
+            <div style="margin-top:0.55rem;display:flex;justify-content:space-between;align-items:flex-end;gap:0.8rem;">
+                <div style="font-size:1.18rem;font-weight:800;color:#f8fafc;">{score}%</div>
+                <div style="font-size:0.78rem;color:#93c5fd;">Resume-JD base score: {analysis_score}%</div>
+            </div>
+            <div style="margin-top:0.35rem;height:8px;background:rgba(148,163,184,0.25);border-radius:999px;overflow:hidden;">
+                <div style="height:8px;width:{score}%;background:linear-gradient(90deg,#22d3ee 0%, {band_color} 100%);"></div>
+            </div>
+            <div style="margin-top:0.55rem;font-size:0.84rem;line-height:1.35;color:#e2e8f0;">
+                {html.escape(summary)}
+            </div>
+            <div style="margin-top:0.38rem;font-size:0.79rem;line-height:1.35;color:#bfdbfe;">
+                Next: {html.escape(next_line)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_active_careers_profile_context() -> tuple[str, str]:
+    use_custom_profile = bool(st.session_state.get("careers_use_custom_profile", False))
+    careers_resume = str(st.session_state.get("careers_resume_text", "")).strip()
+    careers_jd = str(st.session_state.get("careers_target_job_description", "")).strip()
+    if use_custom_profile and careers_resume:
+        return careers_resume, careers_jd
+
+    fallback_resume = str(st.session_state.get("latest_resume_text", "")).strip()
+    fallback_jd = str(st.session_state.get("latest_job_description", "")).strip()
+    return fallback_resume, fallback_jd
+
+
+def get_careers_analysis_score(resume_text: str = "", target_job_description: str = "") -> int:
+    use_custom_profile = bool(st.session_state.get("careers_use_custom_profile", False))
+    if not use_custom_profile:
+        analysis = st.session_state.get("analysis_result")
+        if isinstance(analysis, dict):
+            try:
+                return max(0, min(100, int(analysis.get("score", 0))))
+            except Exception:
+                pass
+
+    has_resume = bool(str(resume_text or "").strip())
+    has_jd = bool(str(target_job_description or "").strip())
+    if has_resume and has_jd:
+        try:
+            fallback_score = int(fallback_analysis(str(resume_text), str(target_job_description)).get("score", 0))
+            return max(0, min(100, fallback_score))
+        except Exception:
+            return 58
+    if has_resume:
+        return 52
+    return 0
+
+
+def render_careers_profile_setup() -> None:
+    from src.ui.pages.careers_page import render_careers_profile_setup as _impl
+
+    return _impl()
+
+def render_careers_motivation_hero(full_name: str, analysis_score: int) -> None:
+    from src.ui.pages.careers_page import render_careers_motivation_hero as _impl
+
+    return _impl(full_name, analysis_score)
+
+def infer_sponsorship_status(job_text: str) -> tuple[str, int, str]:
+    text = str(job_text or "").lower()
+    if not text.strip():
+        return "Unknown", 35, "Job posting does not mention visa sponsorship details."
+
+    positive_signals = (
+        "h-1b",
+        "h1b",
+        "visa sponsorship available",
+        "sponsorship available",
+        "sponsor transfer",
+        "immigration support",
+        "work visa support",
+    )
+    negative_signals = (
+        "no sponsorship",
+        "without sponsorship",
+        "cannot sponsor",
+        "unable to sponsor",
+        "not provide sponsorship",
+        "not eligible for sponsorship",
+        "authorized to work in the us without sponsorship",
+        "without the need for sponsorship",
+        "no visa sponsorship",
+    )
+
+    has_positive = any(signal in text for signal in positive_signals)
+    has_negative = any(signal in text for signal in negative_signals)
+    if has_negative and has_positive:
+        return "Unclear", 55, "Posting contains mixed sponsorship signals; verify with recruiter."
+    if has_negative:
+        return "No Sponsorship", 90, "Posting explicitly says sponsorship is not offered."
+    if has_positive:
+        return "Likely Sponsors H1B", 82, "Posting indicates visa/H1B sponsorship language."
+    return "Unknown", 40, "No explicit sponsorship policy found in posting."
+
+
+def score_location_fit(preferred_location: str, job_location: str) -> tuple[int, str]:
+    preferred = str(preferred_location or "").strip().lower()
+    location = str(job_location or "").strip().lower()
+    if not preferred:
+        return 10, "No location preference provided."
+    if not location:
+        return 7, "Job location not listed."
+    if preferred in location:
+        return 15, "Job location matches your preferred location."
+    if "remote" in location and ("remote" in preferred or "any" in preferred):
+        return 15, "Remote job aligns with your location preference."
+    if "remote" in location:
+        return 12, "Remote role can still work despite location mismatch."
+    return 4, "Job location differs from your preferred location."
+
+
+def get_resume_job_match_score(resume_text: str, job_description: str, allow_ai: bool = True) -> tuple[int, str]:
+    jd = str(job_description or "").strip()
+    if not jd:
+        return 0, "Job description text was unavailable for resume matching."
+
+    use_ai = bool(allow_ai and get_openai_key())
+    if use_ai:
+        try:
+            result = analyze_resume_with_ai(resume_text, jd)
+            score = max(0, min(100, int(result.get("score", 0))))
+            summary = str(result.get("summary", "")).strip()
+            return score, summary or "AI match score calculated from resume and job text."
+        except Exception:
+            pass
+
+    fallback = fallback_analysis(resume_text, jd)
+    score = max(0, min(100, int(fallback.get("score", 0))))
+    summary = str(fallback.get("summary", "")).strip()
+    return score, summary or "Heuristic resume-to-job match score calculated."
+
+
+def evaluate_job_lead_for_candidate(
+    resume_text: str,
+    job_row: dict[str, Any],
+    preferred_location: str,
+    visa_status: str,
+    sponsorship_required: bool,
+    target_job_context: str = "",
+    allow_ai: bool = True,
+) -> dict[str, Any]:
+    description = str(job_row.get("description", "")).strip()
+    title = str(job_row.get("title", "")).strip()
+    company = str(job_row.get("company", "")).strip()
+    location = str(job_row.get("location", "")).strip()
+    apply_url = str(job_row.get("apply_url", "")).strip()
+    posted_at = normalize_posted_at(job_row.get("posted_at", ""))
+    combined_text = f"{title}\n{company}\n{location}\n{description}"
+
+    match_context = description or combined_text
+    target_context = str(target_job_context or "").strip()
+    if target_context:
+        match_context = f"Candidate target role context:\n{target_context}\n\nLive job posting:\n{match_context}"
+
+    resume_match_score, resume_summary = get_resume_job_match_score(resume_text, match_context, allow_ai=allow_ai)
+    sponsorship_status, sponsorship_confidence, sponsorship_note = infer_sponsorship_status(combined_text)
+    location_score, location_note = score_location_fit(preferred_location, location)
+
+    if sponsorship_required:
+        if sponsorship_status == "Likely Sponsors H1B":
+            visa_score = 15
+        elif sponsorship_status == "No Sponsorship":
+            visa_score = 0
+        else:
+            visa_score = 7
+    else:
+        visa_score = 15 if sponsorship_status != "No Sponsorship" else 10
+
+    weighted_resume = int(round(resume_match_score * 0.7))
+    overall_score = max(0, min(100, weighted_resume + location_score + visa_score))
+    visa_profile = str(visa_status or "").strip() or "Not specified"
+    raw_position_tags = job_row.get("position_tags", [])
+    if not isinstance(raw_position_tags, list):
+        raw_position_tags = []
+    position_tags = [str(tag).strip() for tag in raw_position_tags if str(tag).strip()]
+    if not position_tags:
+        position_tags = infer_job_position_tags(job_row)
+    readiness_reason = (
+        f"{location_note} {sponsorship_note} Visa profile: {visa_profile}. "
+        f"Resume fit: {resume_summary[:180]}"
+    ).strip()
+
+    return {
+        "title": title or "Untitled role",
+        "company": company or "Unknown company",
+        "location": location or "Location not listed",
+        "apply_url": apply_url,
+        "posted_at": posted_at,
+        "source": str(job_row.get("source", "")).strip() or "External API",
+        "resume_match_score": resume_match_score,
+        "sponsorship_status": sponsorship_status,
+        "sponsorship_confidence": sponsorship_confidence,
+        "overall_score": overall_score,
+        "position_tags": position_tags,
+        "reason": readiness_reason[:360],
+    }
+
+
+def rank_jobs_for_candidate(
+    resume_text: str,
+    raw_jobs: list[dict[str, Any]],
+    preferred_location: str,
+    visa_status: str,
+    sponsorship_required: bool,
+    target_job_context: str = "",
+) -> list[dict[str, Any]]:
+    valid_jobs = [job for job in raw_jobs if isinstance(job, dict)]
+    if not valid_jobs:
+        return []
+
+    ai_indices: set[int] = set()
+    if bool(get_openai_key()):
+        ai_limit = max(1, min(JOB_SEARCH_MAX_AI_EVALUATIONS, JOB_SEARCH_MAX_RESULTS_LIMIT))
+        if len(valid_jobs) <= ai_limit:
+            ai_indices = set(range(len(valid_jobs)))
+        else:
+            resume_tokens = set(re.findall(r"[a-zA-Z]{3,}", str(resume_text or "").lower()))
+            candidate_scores: list[tuple[int, int]] = []
+            for idx, job in enumerate(valid_jobs):
+                title = str(job.get("title", "")).strip()
+                company = str(job.get("company", "")).strip()
+                location = str(job.get("location", "")).strip()
+                description = str(job.get("description", "")).strip()
+                combined_text = f"{title}\n{company}\n{location}\n{description}"
+                jd_tokens = set(re.findall(r"[a-zA-Z]{3,}", combined_text.lower()))
+                overlap_ratio = 0
+                if resume_tokens and jd_tokens:
+                    overlap_ratio = int((len(resume_tokens.intersection(jd_tokens)) / len(jd_tokens)) * 100)
+                sponsorship_status, sponsorship_confidence, _ = infer_sponsorship_status(combined_text)
+                location_points, _ = score_location_fit(preferred_location, location)
+                if sponsorship_required:
+                    sponsorship_points = 12 if sponsorship_status == "Likely Sponsors H1B" else 0
+                else:
+                    sponsorship_points = 8 if sponsorship_status != "No Sponsorship" else 2
+                rough_score = int(round(overlap_ratio * 0.7)) + location_points + sponsorship_points + int(
+                    sponsorship_confidence * 0.03
+                )
+                candidate_scores.append((rough_score, idx))
+            candidate_scores.sort(reverse=True)
+            ai_indices = {idx for _, idx in candidate_scores[:ai_limit]}
+
+    ranked: list[dict[str, Any]] = []
+    worker_count = max(1, min(JOB_SEARCH_SCORING_MAX_WORKERS, len(valid_jobs)))
+    if worker_count == 1:
+        for idx, raw_job in enumerate(valid_jobs):
+            ranked.append(
+                evaluate_job_lead_for_candidate(
+                    resume_text=resume_text,
+                    job_row=raw_job,
+                    preferred_location=preferred_location,
+                    visa_status=visa_status,
+                    sponsorship_required=sponsorship_required,
+                    target_job_context=target_job_context,
+                    allow_ai=(idx in ai_indices),
+                )
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    evaluate_job_lead_for_candidate,
+                    resume_text=resume_text,
+                    job_row=raw_job,
+                    preferred_location=preferred_location,
+                    visa_status=visa_status,
+                    sponsorship_required=sponsorship_required,
+                    target_job_context=target_job_context,
+                    allow_ai=(idx in ai_indices),
+                ): idx
+                for idx, raw_job in enumerate(valid_jobs)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                raw_job = valid_jobs[idx]
+                try:
+                    ranked.append(future.result())
+                except Exception:
+                    try:
+                        ranked.append(
+                            evaluate_job_lead_for_candidate(
+                                resume_text=resume_text,
+                                job_row=raw_job,
+                                preferred_location=preferred_location,
+                                visa_status=visa_status,
+                                sponsorship_required=sponsorship_required,
+                                target_job_context=target_job_context,
+                                allow_ai=False,
+                            )
+                        )
+                    except Exception:
+                        continue
+    ranked.sort(
+        key=lambda item: (
+            int(item.get("overall_score", 0) or 0),
+            int(item.get("resume_match_score", 0) or 0),
+            int(item.get("sponsorship_confidence", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return ranked[:JOB_SEARCH_MAX_RESULTS_LIMIT]
 
 
 def create_chat_session(user_id: int, title: str = "New Chat") -> int:
@@ -3052,7 +4184,7 @@ def extract_experience_snippets(resume_text: str, limit: int = 20) -> list[str]:
     )
     heading_markers = ("education", "skills", "certification", "summary", "objective")
     for raw in raw_lines:
-        cleaned = re.sub(r"\s+", " ", str(raw or "")).strip(" \t-•*")
+        cleaned = re.sub(r"\s+", " ", str(raw or "")).strip(" \t-â€¢*")
         if len(cleaned) < 24 or len(cleaned) > 260:
             continue
         lower = cleaned.lower()
@@ -3102,7 +4234,7 @@ def filter_points_missing_from_resume(
     accepted: list[str] = []
     seen: set[str] = set()
     for point in points:
-        cleaned = re.sub(r"\s+", " ", str(point or "")).strip().strip("-•* ")
+        cleaned = re.sub(r"\s+", " ", str(point or "")).strip().strip("-â€¢* ")
         if len(cleaned) < 12:
             continue
         token = cleaned.lower()
@@ -3195,7 +4327,7 @@ def parse_resume_addition_points(raw_text: str) -> list[str]:
     lines = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     points: list[str] = []
     for line in lines:
-        cleaned = re.sub(r"^\s*[-*•]+\s*", "", str(line or "")).strip()
+        cleaned = re.sub(r"^\s*[-*â€¢]+\s*", "", str(line or "")).strip()
         if len(cleaned) < 2:
             continue
         points.append(cleaned)
@@ -3259,7 +4391,7 @@ def append_points_to_existing_docx(
 
     additions: list[ET.Element] = [make_paragraph(""), make_paragraph(section_title, bold=True)]
     for point in points:
-        additions.append(make_paragraph(f"• {point}"))
+        additions.append(make_paragraph(f"â€¢ {point}"))
     for element in reversed(additions):
         body.insert(insert_at, element)
 
@@ -3612,6 +4744,22 @@ def sync_bot_for_logged_in_user() -> None:
         st.session_state.ai_workspace_upload_nonce = 0
         st.session_state.ai_workspace_attachments = []
         st.session_state.ai_workspace_unlock_code = ""
+        st.session_state.job_search_results = []
+        st.session_state.job_search_last_error = ""
+        st.session_state.job_search_role_query = ""
+        st.session_state.job_search_preferred_location = ""
+        st.session_state.job_search_visa_status = JOB_SEARCH_VISA_STATUSES[0]
+        st.session_state.job_search_sponsorship_required = False
+        st.session_state.job_search_position_types = []
+        st.session_state.job_search_max_results = JOB_SEARCH_MAX_RESULTS_DEFAULT
+        st.session_state.job_search_posted_within_days = 0
+        st.session_state.careers_use_custom_profile = False
+        st.session_state.careers_input_mode = "Resume + JD"
+        st.session_state.careers_resume_text = ""
+        st.session_state.careers_resume_file_name = ""
+        st.session_state.careers_target_job_description = ""
+        st.session_state.careers_target_job_description_input = ""
+        st.session_state.careers_profile_status = ""
         unlocked = has_promo_redemption(email)
         st.session_state.ai_workspace_unlock_status = (
             "Access unlocked for this account." if unlocked else ""
@@ -3695,6 +4843,18 @@ def fallback_analysis(resume_text: str, job_description: str) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=12)
+def build_resume_vectorstore_cached(resume_text: str, api_key: str) -> tuple[Any, int]:
+    splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
+    chunks = splitter.split_text(str(resume_text or ""))
+    documents = [Document(page_content=chunk) for chunk in chunks if chunk.strip()]
+    if not documents:
+        return None, 0
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
+    vectorstore = FAISS.from_documents(documents, embeddings)
+    return vectorstore, len(documents)
+
+
 def analyze_resume_with_ai(resume_text: str, job_description: str) -> dict[str, Any]:
     jd_ok, jd_error = validate_job_description_text(job_description)
     if not jd_ok:
@@ -3704,15 +4864,14 @@ def analyze_resume_with_ai(resume_text: str, job_description: str) -> dict[str, 
     if not key:
         return fallback_analysis(resume_text, job_description)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
-    chunks = splitter.split_text(resume_text)
-    documents = [Document(page_content=chunk) for chunk in chunks if chunk.strip()]
-    if not documents:
+    try:
+        vectorstore, doc_count = build_resume_vectorstore_cached(resume_text, key)
+    except Exception:
+        return fallback_analysis(resume_text, job_description)
+    if vectorstore is None or int(doc_count or 0) <= 0:
         return fallback_analysis(resume_text, job_description)
 
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=key)
-    vectorstore = FAISS.from_documents(documents, embeddings)
-    top_docs = vectorstore.similarity_search(job_description, k=min(4, len(documents)))
+    top_docs = vectorstore.similarity_search(job_description, k=min(4, int(doc_count or 1)))
     context = "\n\n".join(doc.page_content for doc in top_docs)
 
     prompt = f"""
@@ -3978,7 +5137,7 @@ def _normalize_text_list(raw_items: Any, limit: int, fallback: list[str]) -> lis
     values: list[str] = []
     if isinstance(raw_items, list):
         for item in raw_items:
-            cleaned = re.sub(r"\s+", " ", str(item or "")).strip().strip("-•* ")
+            cleaned = re.sub(r"\s+", " ", str(item or "")).strip().strip("-â€¢* ")
             if cleaned:
                 values.append(cleaned)
     deduped: list[str] = []
@@ -5409,6 +6568,22 @@ def init_state() -> None:
         "resume_editor_draft_text": "",
         "resume_editor_source_sig": "",
         "resume_export_panel_open": False,
+        "job_search_role_query": "",
+        "job_search_preferred_location": "",
+        "job_search_visa_status": JOB_SEARCH_VISA_STATUSES[0],
+        "job_search_sponsorship_required": False,
+        "job_search_position_types": [],
+        "job_search_max_results": JOB_SEARCH_MAX_RESULTS_DEFAULT,
+        "job_search_posted_within_days": 0,
+        "job_search_results": [],
+        "job_search_last_error": "",
+        "careers_use_custom_profile": False,
+        "careers_input_mode": "Resume + JD",
+        "careers_resume_text": "",
+        "careers_resume_file_name": "",
+        "careers_target_job_description": "",
+        "careers_target_job_description_input": "",
+        "careers_profile_status": "",
         "coding_room_payload": None,
         "coding_room_source_sig": "",
         "coding_room_stage_index": 0,
@@ -6512,6 +7687,22 @@ def logout_current_user() -> None:
     st.session_state.resume_editor_draft_text = ""
     st.session_state.resume_editor_source_sig = ""
     st.session_state.resume_export_panel_open = False
+    st.session_state.job_search_role_query = ""
+    st.session_state.job_search_preferred_location = ""
+    st.session_state.job_search_visa_status = JOB_SEARCH_VISA_STATUSES[0]
+    st.session_state.job_search_sponsorship_required = False
+    st.session_state.job_search_position_types = []
+    st.session_state.job_search_max_results = JOB_SEARCH_MAX_RESULTS_DEFAULT
+    st.session_state.job_search_posted_within_days = 0
+    st.session_state.job_search_results = []
+    st.session_state.job_search_last_error = ""
+    st.session_state.careers_use_custom_profile = False
+    st.session_state.careers_input_mode = "Resume + JD"
+    st.session_state.careers_resume_text = ""
+    st.session_state.careers_resume_file_name = ""
+    st.session_state.careers_target_job_description = ""
+    st.session_state.careers_target_job_description_input = ""
+    st.session_state.careers_profile_status = ""
     st.session_state.coding_room_payload = None
     st.session_state.coding_room_source_sig = ""
     st.session_state.coding_room_stage_index = 0
@@ -6592,6 +7783,10 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                         st.session_state.dashboard_view = "ai_workspace"
                         st.session_state.bot_open = False
                         st.rerun()
+                    if st.button("ZoSwi Careers", key="sidebar_nav_careers", use_container_width=True):
+                        st.session_state.dashboard_view = "careers"
+                        st.session_state.bot_open = False
+                        st.rerun()
                     if st.button("Home", key="sidebar_nav_home", use_container_width=True):
                         st.session_state.dashboard_view = "home"
                         st.rerun()
@@ -6667,6 +7862,8 @@ def render_home_dashboard(user: dict[str, Any]) -> None:
                 st.session_state.latest_job_description = str(job_description or "").strip()
                 st.session_state.latest_resume_file_name = str(getattr(uploaded_file, "name", "resume")).strip()
                 st.session_state.resume_export_panel_open = False
+                st.session_state.job_search_results = []
+                st.session_state.job_search_last_error = ""
                 st.session_state.coding_room_source_sig = ""
                 st.session_state.coding_room_payload = None
                 st.session_state.coding_room_stage_index = 0
@@ -6726,6 +7923,16 @@ def render_home_dashboard(user: dict[str, Any]) -> None:
         render_resume_export_assistant(show_toggle_button=False)
         st.caption("ZoSwi is available in the round memoji button at the bottom-right.")
 
+
+def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
+    from src.ui.pages.careers_page import render_job_match_mvp_panel as _impl
+
+    return _impl(user)
+
+def render_careers_view(user: dict[str, Any]) -> None:
+    from src.ui.pages.careers_page import render_careers_view as _impl
+
+    return _impl(user)
 
 def render_recent_scores_view(user: dict[str, Any]) -> None:
     user_id = int(user.get("id") or 0)
@@ -6908,1882 +8115,14 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
 
 
 def render_ai_workspace_view(user: dict[str, Any]) -> None:
-    full_name = str(user.get("full_name", "")).strip()
-    first_name = full_name.split()[0] if full_name else "Candidate"
-    user_name_label = first_name if first_name else "Candidate"
-    email = str(user.get("email", "")).strip().lower()
-    logo_data_uri = get_logo_data_uri()
+    from src.ui.pages.ai_workspace_page import render_ai_workspace_view as _impl
 
-    if st.session_state.get("ai_workspace_clear_input"):
-        st.session_state.ai_workspace_input = ""
-        st.session_state.ai_workspace_clear_input = False
-
-    unlocked_in_db = has_promo_redemption(email)
-    if bool(st.session_state.get("ai_workspace_unlock_ok")) != unlocked_in_db:
-        st.session_state.ai_workspace_unlock_ok = unlocked_in_db
-        if unlocked_in_db and not str(st.session_state.get("ai_workspace_unlock_status", "")).strip():
-            st.session_state.ai_workspace_unlock_status = "Access unlocked for this account."
-
-    if not st.session_state.get("ai_workspace_messages"):
-        st.session_state.ai_workspace_messages = default_ai_workspace_messages(full_name)
-    else:
-        # Clean up legacy user entries that may contain full attached-file payloads.
-        current_msgs = st.session_state.get("ai_workspace_messages", [])
-        if isinstance(current_msgs, list):
-            updated_msgs: list[dict[str, str]] = []
-            changed = False
-            for msg in current_msgs:
-                role = str(msg.get("role", "")).strip().lower()
-                raw_content = str(msg.get("content", ""))
-                if role == "user":
-                    compact = compress_ai_workspace_user_message(raw_content)
-                    if compact != raw_content:
-                        changed = True
-                    updated_msgs.append({"role": "user", "content": compact})
-                else:
-                    updated_msgs.append({"role": "assistant", "content": raw_content})
-            if changed:
-                st.session_state.ai_workspace_messages = updated_msgs
-
-    st.markdown(
-        """
-        <style>
-        .ai-workspace-shell {
-            border: 1px solid #dbeafe;
-            border-radius: 16px;
-            background:
-                radial-gradient(800px 300px at -8% -18%, rgba(14, 165, 233, 0.18) 0%, transparent 58%),
-                radial-gradient(680px 260px at 108% 0%, rgba(20, 184, 166, 0.16) 0%, transparent 62%),
-                #ffffff;
-            box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
-            padding: 0.92rem;
-        }
-        .ai-workspace-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.7rem;
-            margin-bottom: 0.64rem;
-        }
-        .ai-workspace-title {
-            margin: 0;
-            color: #0f172a;
-            font-size: 1.18rem;
-            line-height: 1.2;
-            font-weight: 900;
-            display: inline-flex;
-            align-items: baseline;
-            gap: 0.42rem;
-        }
-        .ai-workspace-title-brand {
-            background: linear-gradient(120deg, #67e8f9 0%, #60a5fa 34%, #a78bfa 68%, #c084fc 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .ai-workspace-title-role {
-            color: #0f172a;
-        }
-        .ai-workspace-sub {
-            margin: 0.2rem 0 0 0;
-            color: #475569;
-            font-size: 0.84rem;
-        }
-        .ai-workspace-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.36rem;
-            border: 1px solid #99f6e4;
-            background: #f0fdfa;
-            color: #0f766e;
-            border-radius: 999px;
-            padding: 0.26rem 0.62rem;
-            font-size: 0.75rem;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-        .ai-workspace-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: #14b8a6;
-            box-shadow: 0 0 0 6px rgba(20, 184, 166, 0.2);
-            animation: aiWorkspacePulse 1.7s ease-out infinite;
-        }
-        @keyframes aiWorkspacePulse {
-            0% { transform: scale(0.85); opacity: 0.88; }
-            70% { transform: scale(1.12); opacity: 1; }
-            100% { transform: scale(0.86); opacity: 0.84; }
-        }
-        .st-key-ai_workspace_unlock_apply_btn button,
-        .st-key-ai_workspace_insert_btn button,
-        .st-key-ai_workspace_insert_send_btn button,
-        .st-key-ai_workspace_send_btn button {
-            border-radius: 999px !important;
-            min-height: 2.05rem !important;
-            font-size: 0.76rem !important;
-            font-weight: 700 !important;
-            padding: 0.18rem 0.62rem !important;
-        }
-        .st-key-ai_workspace_unlock_apply_btn button {
-            border: 1px solid #0f766e !important;
-            background: linear-gradient(130deg, #14b8a6 0%, #0ea5e9 100%) !important;
-            color: #ffffff !important;
-            box-shadow: 0 8px 18px rgba(20, 184, 166, 0.22) !important;
-        }
-        .st-key-ai_workspace_insert_send_btn button,
-        .st-key-ai_workspace_send_btn button {
-            border: 1px solid #0f766e !important;
-            background: linear-gradient(130deg, #14b8a6 0%, #0284c7 100%) !important;
-            color: #ffffff !important;
-            box-shadow: 0 8px 18px rgba(2, 132, 199, 0.2) !important;
-        }
-        .st-key-ai_workspace_reset_btn button {
-            border-radius: 999px !important;
-            width: 1.96rem !important;
-            min-width: 1.96rem !important;
-            max-width: 1.96rem !important;
-            min-height: 1.96rem !important;
-            padding: 0 !important;
-            font-size: 0.92rem !important;
-            font-weight: 800 !important;
-            border: 1px solid #bfdbfe !important;
-            background: #eff6ff !important;
-            color: #1e3a8a !important;
-            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.18) !important;
-        }
-        .st-key-ai_workspace_reset_btn {
-            display: flex !important;
-            justify-content: flex-end !important;
-            align-items: center !important;
-        }
-        .st-key-ai_workspace_reset_btn button:hover {
-            border-color: #93c5fd !important;
-            background: #dbeafe !important;
-        }
-        .st-key-ai_workspace_unlock_shell [data-testid="stTextInput"] input,
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input {
-            min-height: 2.1rem !important;
-            border-radius: 999px !important;
-            border: 1px solid #cbd5e1 !important;
-            padding-left: 0.82rem !important;
-        }
-        .st-key-ai_workspace_input_wrap {
-            border: 1px solid #cfe3f7 !important;
-            border-radius: 16px !important;
-            padding: 0.3rem 0.34rem !important;
-            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
-            box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06) !important;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stHorizontalBlock"] {
-            align-items: center !important;
-        }
-        .st-key-ai_workspace_prefix_wrap {
-            position: relative !important;
-            min-height: 2rem !important;
-            display: flex !important;
-            align-items: center !important;
-            overflow: visible !important;
-            margin-right: -0.18rem !important;
-        }
-        .aiws-prefix-visual {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.24rem;
-            min-height: 2rem;
-            color: #0f172a;
-            white-space: nowrap;
-            user-select: none;
-            pointer-events: none;
-        }
-        .aiws-prefix-plus {
-            font-size: 1.5rem;
-            line-height: 1;
-            font-weight: 900;
-            color: #082f49;
-            text-shadow: 0 1px 0 rgba(255, 255, 255, 0.88), 0 0 1px rgba(8, 47, 73, 0.2);
-            margin-right: 0.02rem;
-        }
-        .aiws-prefix-brand {
-            font-size: 0.82rem;
-            font-weight: 900;
-            letter-spacing: 0.01em;
-            color: #8b5cf6;
-            background: linear-gradient(120deg, #67e8f9 0%, #60a5fa 34%, #a78bfa 68%, #c084fc 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            line-height: 1;
-            position: relative;
-            top: 2px;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] {
-            margin-bottom: 0 !important;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] > div {
-            border: 0 !important;
-            box-shadow: none !important;
-            background: transparent !important;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input {
-            border-color: #93c5fd !important;
-            box-shadow:
-                inset 0 1px 0 rgba(255, 255, 255, 0.85),
-                0 1px 2px rgba(14, 116, 144, 0.08) !important;
-            background: #ffffff !important;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input:focus,
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input:focus-visible,
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input[aria-invalid="true"] {
-            border-color: #0284c7 !important;
-            box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.16) !important;
-            outline: none !important;
-        }
-        .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input:invalid {
-            border-color: #93c5fd !important;
-            box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.12) !important;
-        }
-        .st-key-ai_workspace_chat_wrap {
-            border: 1px solid #dbeafe;
-            border-radius: 14px;
-            padding: 0.45rem;
-            margin-top: 0.5rem;
-            background:
-                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='340' height='140' viewBox='0 0 340 140'%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI,Arial,sans-serif' font-size='52' font-weight='700' fill='%230284c7' fill-opacity='0.11'%3EZoSwi%3C/text%3E%3C/svg%3E"),
-                linear-gradient(transparent 96%, rgba(148, 163, 184, 0.05) 96%),
-                linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px),
-                linear-gradient(180deg, rgba(239, 246, 255, 0.74) 0%, rgba(248, 250, 252, 0.96) 46%, #ffffff 100%);
-            background-repeat: no-repeat, repeat, repeat, no-repeat;
-            background-position: center center, 0 0, 0 0, center center;
-            background-size: 220px auto, 100% 1.55rem, 1.55rem 100%, 100% 100%;
-        }
-        .st-key-ai_workspace_insert_wrap [data-testid="stSelectbox"] > label {
-            display: none !important;
-        }
-        .st-key-ai_workspace_insert_wrap [data-testid="stSelectbox"] {
-            max-width: 420px !important;
-        }
-        .st-key-ai_workspace_insert_wrap {
-            margin: 0.02rem 0 0.1rem 0 !important;
-        }
-        .st-key-ai_workspace_insert_wrap [data-testid="stHorizontalBlock"] {
-            align-items: center !important;
-            flex-wrap: nowrap !important;
-        }
-        .st-key-ai_workspace_insert_wrap [data-baseweb="select"] > div {
-            min-height: 1.9rem !important;
-            border-radius: 12px !important;
-            border: 1px solid #bfdbfe !important;
-            background: #ffffff !important;
-            box-shadow: 0 1px 2px rgba(2, 132, 199, 0.08) !important;
-        }
-        .st-key-ai_workspace_insert_wrap [data-baseweb="select"] span {
-            font-size: 0.78rem !important;
-            font-weight: 600 !important;
-        }
-        .st-key-ai_workspace_insert_btn button {
-            min-height: 1.9rem !important;
-            border-radius: 10px !important;
-            padding: 0.06rem 0.72rem !important;
-            font-size: 0.74rem !important;
-            font-weight: 800 !important;
-            border: 1px solid #bfdbfe !important;
-            background: linear-gradient(180deg, #ffffff 0%, #eff6ff 100%) !important;
-            color: #1e3a8a !important;
-            box-shadow: 0 1px 2px rgba(30, 58, 138, 0.1) !important;
-        }
-        .st-key-ai_workspace_insert_send_btn button {
-            min-height: 1.9rem !important;
-            border-radius: 10px !important;
-            padding: 0.06rem 0.76rem !important;
-            font-size: 0.74rem !important;
-            font-weight: 800 !important;
-            border: 1px solid #14b8a6 !important;
-            background: linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%) !important;
-            color: #f8fafc !important;
-            box-shadow: 0 2px 6px rgba(14, 116, 144, 0.24) !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploader"] > label {
-            display: none !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploader"] {
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 1.5rem !important;
-            min-width: 1.5rem !important;
-            max-width: 1.5rem !important;
-            height: 2rem !important;
-            min-height: 2rem !important;
-            overflow: hidden !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            z-index: 2 !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] {
-            border-radius: 0 !important;
-            padding: 0 !important;
-            min-height: 2rem !important;
-            height: 2rem !important;
-            width: 1.5rem !important;
-            border: 0 !important;
-            background: transparent !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            box-shadow: none !important;
-            position: relative !important;
-            overflow: hidden !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"]::before {
-            content: "" !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] button {
-            position: absolute !important;
-            inset: 0 !important;
-            width: 100% !important;
-            min-width: 100% !important;
-            height: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            opacity: 0 !important;
-            color: transparent !important;
-            font-size: 0 !important;
-            background: transparent !important;
-            border: 0 !important;
-            box-shadow: none !important;
-            cursor: pointer !important;
-            z-index: 2 !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"],
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"] > div,
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"] small,
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderFileName"],
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderFile"],
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderUploadedFile"],
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDeleteBtn"],
-        .st-key-ai_workspace_prefix_wrap [class*="uploadedFile"],
-        .st-key-ai_workspace_prefix_wrap [class*="fileUploaderFile"],
-        .st-key-ai_workspace_prefix_wrap [class*="fileUploaderUploadedFile"],
-        .st-key-ai_workspace_prefix_wrap small {
-            display: none !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"]:hover {
-            border: 0 !important;
-            background: transparent !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] > div {
-            display: none !important;
-        }
-        .st-key-ai_workspace_send_btn button {
-            min-height: 2rem !important;
-            border-radius: 10px !important;
-            font-size: 0.8rem !important;
-            letter-spacing: 0 !important;
-            border: 1px solid #0ea5e9 !important;
-            background: #e0f2fe !important;
-            color: #0c4a6e !important;
-            box-shadow: none !important;
-        }
-        .aiws-row {
-            width: 100%;
-            display: flex;
-            margin-bottom: 0.52rem;
-        }
-        .aiws-chat-brand {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.36rem;
-            margin: 0.06rem 0 0.48rem 0.08rem;
-            font-size: 0.86rem;
-            font-weight: 900;
-            letter-spacing: 0.015em;
-            color: #0f172a;
-        }
-        .aiws-chat-brand .brand-text {
-            background: linear-gradient(120deg, #67e8f9 0%, #60a5fa 34%, #a78bfa 68%, #c084fc 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .aiws-chat-brand .brand-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: linear-gradient(120deg, #14b8a6 0%, #0ea5e9 58%, #a78bfa 100%);
-            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
-            animation: aiwsLiveBlink 1.15s ease-in-out infinite;
-            transform-origin: center;
-        }
-        @keyframes aiwsLiveBlink {
-            0% {
-                opacity: 0.42;
-                transform: scale(0.84);
-                box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.28);
-            }
-            50% {
-                opacity: 1;
-                transform: scale(1.02);
-                box-shadow: 0 0 0 6px rgba(14, 165, 233, 0.1);
-            }
-            100% {
-                opacity: 0.42;
-                transform: scale(0.84);
-                box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.22);
-            }
-        }
-        .aiws-row.assistant {
-            justify-content: flex-start;
-        }
-        .aiws-row.user {
-            justify-content: flex-end;
-        }
-        .aiws-msg {
-            border-radius: 14px;
-            padding: 0.56rem 0.7rem;
-            border: 1px solid transparent;
-            max-width: min(86%, 930px);
-            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
-        }
-        .aiws-msg.assistant {
-            background: linear-gradient(132deg, #eef9ff 0%, #ecfeff 36%, #f5f3ff 70%, #faf5ff 100%);
-            border-color: #a5b4fc;
-        }
-        .aiws-msg.user {
-            background: linear-gradient(132deg, #f0f9ff 0%, #dcfce7 100%);
-            border-color: #86efac;
-        }
-        .aiws-msg-head {
-            display: flex;
-            align-items: center;
-            gap: 0.35rem;
-            margin-bottom: 0.2rem;
-        }
-        .aiws-msg-head.assistant {
-            gap: 0.42rem;
-        }
-        .aiws-name {
-            font-size: 0.86rem;
-            font-weight: 950;
-            color: #0f172a;
-            letter-spacing: 0.01em;
-        }
-        .aiws-name.assistant {
-            background: linear-gradient(120deg, #67e8f9 0%, #60a5fa 34%, #a78bfa 68%, #c084fc 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .aiws-name.user {
-            color: #0f172a;
-        }
-        .aiws-msg-text {
-            color: #0f172a;
-            font-size: 0.85rem;
-            line-height: 1.45;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .aiws-input-note {
-            margin: 0.18rem auto 0.08rem auto;
-            text-align: center;
-            color: #6b7280;
-            font-size: 0.72rem;
-            line-height: 1.3;
-            font-weight: 500;
-            width: 100%;
-            animation: aiwsInputNoteBlink 1.15s ease-in-out infinite;
-        }
-        @keyframes aiwsInputNoteBlink {
-            0% {
-                opacity: 0.42;
-            }
-            50% {
-                opacity: 0.95;
-            }
-            100% {
-                opacity: 0.42;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    if logo_data_uri:
-        st.markdown(
-            f"""
-            <style>
-            .st-key-ai_workspace_chat_wrap {{
-                background:
-                    linear-gradient(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.9)),
-                    url("{logo_data_uri}"),
-                    linear-gradient(transparent 96%, rgba(148, 163, 184, 0.05) 96%),
-                    linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px),
-                    linear-gradient(180deg, rgba(239, 246, 255, 0.74) 0%, rgba(248, 250, 252, 0.96) 46%, #ffffff 100%) !important;
-                background-repeat: no-repeat, no-repeat, repeat, repeat, no-repeat !important;
-                background-position: center center, center center, 0 0, 0 0, center center !important;
-                background-size: 100% 100%, 520px auto, 100% 1.55rem, 1.55rem 100%, 100% 100% !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"""
-        <div class="ai-hero">
-            <div class="ai-chip">Promo Workspace</div>
-            <h1>ZoSwi AI Workspace</h1>
-            <p>Chat in a full-screen assistant experience with real-time streaming responses for {html.escape(first_name)}.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if not bool(st.session_state.get("ai_workspace_unlock_ok")):
-        st.info("Unlock AI Workspace with your promo code. This access can be redeemed once per account.")
-        with st.container(key="ai_workspace_unlock_shell"):
-            _, center_col, _ = st.columns([1.2, 2.6, 1.2], gap="small")
-            with center_col:
-                unlock_cols = st.columns([4.0, 1.15], gap="small")
-                with unlock_cols[0]:
-                    promo_code_text = st.text_input(
-                        "Promo code",
-                        key="ai_workspace_unlock_code",
-                        placeholder="Enter promo code",
-                        label_visibility="collapsed",
-                    )
-                with unlock_cols[1]:
-                    unlock_clicked = st.button(
-                        "Unlock",
-                        key="ai_workspace_unlock_apply_btn",
-                        use_container_width=True,
-                    )
-        if unlock_clicked:
-            ok_unlock, unlock_message = redeem_promo_code(promo_code_text, email)
-            st.session_state.ai_workspace_unlock_ok = bool(ok_unlock)
-            st.session_state.ai_workspace_unlock_status = unlock_message
-            if ok_unlock:
-                st.rerun()
-        unlock_status = str(st.session_state.get("ai_workspace_unlock_status", "")).strip()
-        if unlock_status:
-            if bool(st.session_state.get("ai_workspace_unlock_ok")):
-                st.success(unlock_status)
-            else:
-                st.error(unlock_status)
-        return
-
-    pending_prompt = st.session_state.get("ai_workspace_pending_prompt")
-    waiting_for_reply = bool(pending_prompt)
-    st.caption("Access active for this account.")
-    with st.container(key="ai_workspace_shell"):
-        st.markdown(
-            """
-            <div class="ai-workspace-shell">
-                <div class="ai-workspace-top">
-                    <div>
-                        <p class="ai-workspace-title"><span class="ai-workspace-title-brand">ZoSwi</span><span class="ai-workspace-title-role">Assistant</span></p>
-                        <p class="ai-workspace-sub">Natural conversational mode tuned for practical, high-quality answers.</p>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.container(key="ai_workspace_chat_wrap"):
-            header_cols = st.columns([9.1, 0.9], gap="small")
-            with header_cols[0]:
-                st.markdown(
-                    '<div class="aiws-chat-brand"><span class="brand-dot"></span><span class="brand-text">ZoSwi</span></div>',
-                    unsafe_allow_html=True,
-                )
-            with header_cols[1]:
-                if st.button("\u21bb", key="ai_workspace_reset_btn", help="Reset chat", use_container_width=False):
-                    st.session_state.ai_workspace_messages = default_ai_workspace_messages(full_name)
-                    st.session_state.ai_workspace_pending_prompt = None
-                    st.session_state.ai_workspace_clear_input = True
-                    st.session_state.ai_workspace_attachments = []
-                    st.session_state.ai_workspace_upload_nonce = int(st.session_state.get("ai_workspace_upload_nonce", 0) or 0) + 1
-                    st.rerun()
-            with st.container(height=560):
-                chat_history_container = st.container()
-                live_reply_container = st.container()
-                with chat_history_container:
-                    for msg in st.session_state.get("ai_workspace_messages", []):
-                        st.markdown(
-                            format_ai_workspace_message_html(
-                                str(msg.get("role", "assistant")),
-                                str(msg.get("content", "")),
-                                user_name_label,
-                            ),
-                            unsafe_allow_html=True,
-                        )
-                st.markdown('<div id="zoswi-scroll-anchor"></div>', unsafe_allow_html=True)
-                render_zoswi_autoscroll()
-
-        prompt_templates = {
-            "Resume Improvement": "Review my resume and suggest 5 high-impact bullet improvements for the target role.",
-            "JD Match Gaps": "Based on my JD analysis, what are my biggest skill gaps and how do I close them in 30 days?",
-            "Interview Prep": "Ask me 5 technical interview questions for my role and then critique my answers.",
-            "ATS Keywords": "Give me ATS keywords I should add for this job description and where to place them.",
-            "Project Story": "Help me build a STAR story for one project with metrics and impact.",
-        }
-        if "ai_workspace_insert_topic" not in st.session_state:
-            st.session_state.ai_workspace_insert_topic = next(iter(prompt_templates))
-        with st.container(key="ai_workspace_insert_wrap"):
-            insert_cols = st.columns([2.25, 0.86, 0.98, 5.91], gap="small")
-            with insert_cols[0]:
-                selected_topic = st.selectbox(
-                    "Insert prompt topic",
-                    options=list(prompt_templates.keys()),
-                    key="ai_workspace_insert_topic",
-                    label_visibility="collapsed",
-                    disabled=waiting_for_reply,
-                )
-            with insert_cols[1]:
-                insert_clicked = st.button(
-                    "+ Insert",
-                    key="ai_workspace_insert_btn",
-                    use_container_width=True,
-                    disabled=waiting_for_reply,
-                )
-            with insert_cols[2]:
-                insert_send_clicked = st.button(
-                    "Ask Now \u2192",
-                    key="ai_workspace_insert_send_btn",
-                    use_container_width=True,
-                    disabled=waiting_for_reply,
-                )
-        st.caption("Use Insert to prefill, or Ask Now to send immediately.")
-        selected_prompt = str(prompt_templates.get(selected_topic, "")).strip()
-        if insert_clicked:
-            st.session_state.ai_workspace_input = selected_prompt
-            st.rerun()
-        if insert_send_clicked and selected_prompt:
-            ai_messages = st.session_state.get("ai_workspace_messages", [])
-            if not isinstance(ai_messages, list):
-                ai_messages = []
-            ai_messages.append({"role": "user", "content": selected_prompt})
-            st.session_state.ai_workspace_messages = ai_messages
-            st.session_state.ai_workspace_pending_prompt = selected_prompt
-            st.session_state.ai_workspace_clear_input = True
-            st.rerun()
-
-        upload_nonce = int(st.session_state.get("ai_workspace_upload_nonce", 0) or 0)
-        upload_widget_key = f"ai_workspace_input_file_upload_{upload_nonce}"
-        with st.container(key="ai_workspace_input_wrap"):
-            row_cols = st.columns([0.54, 8.72, 0.74], gap="small")
-            with row_cols[0]:
-                with st.container(key="ai_workspace_prefix_wrap"):
-                    st.markdown(
-                        '<div class="aiws-prefix-visual"><span class="aiws-prefix-plus">+</span><span class="aiws-prefix-brand">ZoSwi</span></div>',
-                        unsafe_allow_html=True,
-                    )
-                    attached_file = st.file_uploader(
-                        "Attach file",
-                        key=upload_widget_key,
-                        type=AI_WORKSPACE_FILE_TYPES,
-                        label_visibility="collapsed",
-                        disabled=waiting_for_reply,
-                    )
-            with row_cols[1]:
-                message = st.text_input(
-                    "Message AI Workspace",
-                    key="ai_workspace_input",
-                    on_change=request_ai_workspace_submit,
-                    placeholder="Ask anything...",
-                    label_visibility="collapsed",
-                    disabled=waiting_for_reply,
-                )
-            with row_cols[2]:
-                send = st.button(
-                    "\u2191",
-                    key="ai_workspace_send_btn",
-                    use_container_width=True,
-                    help="Send",
-                    disabled=waiting_for_reply,
-                )
-        st.markdown('<div class="aiws-input-note">ZoSwi can make mistakes. Please verify important responses.</div>', unsafe_allow_html=True)
-        submit_requested = bool(send) or bool(st.session_state.get("ai_workspace_submit"))
-        if submit_requested:
-            st.session_state.ai_workspace_submit = False
-
-        if submit_requested and not waiting_for_reply:
-            clean_message = str(message or "").strip()
-            final_message = clean_message
-            display_message = clean_message
-            if attached_file is not None:
-                ok_file, file_text, file_notice = extract_ai_workspace_file_text(attached_file)
-                if not ok_file:
-                    st.error(file_notice)
-                    final_message = ""
-                    display_message = ""
-                else:
-                    uploaded_name = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
-                    add_ai_workspace_attachment(uploaded_name, file_text)
-                    if clean_message:
-                        final_message = clean_message
-                    else:
-                        final_message = f"I attached file {uploaded_name}. Keep it as context for follow-up questions."
-                    attach_line = f"Attached file: {uploaded_name}"
-                    display_message = f"{clean_message}\n\n{attach_line}".strip() if clean_message else attach_line
-            if final_message.strip():
-                ai_messages = st.session_state.get("ai_workspace_messages", [])
-                if not isinstance(ai_messages, list):
-                    ai_messages = []
-                ai_messages.append({"role": "user", "content": display_message.strip()})
-                st.session_state.ai_workspace_messages = ai_messages
-                st.session_state.ai_workspace_pending_prompt = final_message
-                st.session_state.ai_workspace_clear_input = True
-                st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
-                st.rerun()
-
-        if pending_prompt:
-            with live_reply_container:
-                response_placeholder = st.empty()
-                response_placeholder.markdown(
-                    format_ai_workspace_message_html("assistant", "...", user_name_label),
-                    unsafe_allow_html=True,
-                )
-                response_text = ""
-                for chunk in ask_ai_workspace_stream(str(pending_prompt)):
-                    response_text += str(chunk)
-                    response_placeholder.markdown(
-                        format_ai_workspace_message_html("assistant", response_text + " \u258c", user_name_label),
-                        unsafe_allow_html=True,
-                    )
-                if not response_text.strip():
-                    response_text = "I hit a temporary issue generating a response. Please try again."
-                response_placeholder.markdown(
-                    format_ai_workspace_message_html("assistant", response_text, user_name_label),
-                    unsafe_allow_html=True,
-                )
-
-            ai_messages = st.session_state.get("ai_workspace_messages", [])
-            if not isinstance(ai_messages, list):
-                ai_messages = []
-            ai_messages.append({"role": "assistant", "content": response_text})
-            st.session_state.ai_workspace_messages = ai_messages
-            st.session_state.ai_workspace_pending_prompt = None
-            st.rerun()
-
+    return _impl(user)
 
 def render_coding_room_view(user: dict[str, Any]) -> None:
-    full_name = str(user.get("full_name", "")).strip()
-    first_name = full_name.split()[0] if full_name else "Candidate"
-    analysis = st.session_state.get("analysis_result") or {}
-    resume_text = str(st.session_state.get("latest_resume_text", "")).strip()
-    job_description = str(st.session_state.get("latest_job_description", "")).strip()
-    logo_data_uri = get_logo_data_uri()
-    # One-time cleanup for legacy autoscroll observers that can cause scroll jitter while typing.
-    render_zoswi_autoscroll_cleanup_once()
-    if st.session_state.get("coding_room_clear_input"):
-        st.session_state.coding_room_user_input = ""
-        st.session_state.coding_room_clear_input = False
+    from src.ui.pages.coding_room_page import render_coding_room_view as _impl
 
-    st.markdown(
-        """
-        <style>
-        .coding-room-shell {
-            border: 1px solid #dbeafe;
-            border-radius: 18px;
-            padding: 1rem 1rem 0.8rem 1rem;
-            background:
-                radial-gradient(800px 280px at -8% -14%, rgba(14, 165, 233, 0.16) 0%, transparent 56%),
-                radial-gradient(600px 240px at 100% 0%, rgba(20, 184, 166, 0.15) 0%, transparent 60%),
-                #ffffff;
-            box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
-        }
-        .coding-room-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.8rem;
-            margin-bottom: 0.75rem;
-        }
-        .coding-room-title h2 {
-            margin: 0;
-            color: #0f172a;
-            font-size: 1.48rem;
-            line-height: 1.15;
-        }
-        .coding-room-title p {
-            margin: 0.22rem 0 0 0;
-            color: #475569;
-            font-size: 0.9rem;
-        }
-        .coding-live-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            border: 1px solid #99f6e4;
-            background: #f0fdfa;
-            color: #0f766e;
-            border-radius: 999px;
-            padding: 0.28rem 0.62rem;
-            font-size: 0.76rem;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-        .coding-live-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #14b8a6;
-            box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.55);
-            animation: codingLivePulse 1.5s infinite;
-        }
-        @keyframes codingLivePulse {
-            0% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.52); }
-            70% { box-shadow: 0 0 0 8px rgba(20, 184, 166, 0.0); }
-            100% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.0); }
-        }
-        .coding-video-shell {
-            border: 1px solid #dbeafe;
-            border-radius: 15px;
-            overflow: hidden;
-            background: linear-gradient(180deg, #f8fbff 0%, #eef7ff 100%);
-            min-height: 468px;
-        }
-        .coding-video-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.65rem;
-            padding: 0.58rem 0.72rem;
-            border-bottom: 1px solid #e2e8f0;
-            background: rgba(255, 255, 255, 0.86);
-        }
-        .coding-memoji {
-            width: 34px;
-            height: 34px;
-            border-radius: 50%;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #34d399 0%, #22d3ee 100%);
-            color: #ffffff;
-            font-size: 1.05rem;
-            box-shadow: 0 8px 18px rgba(45, 212, 191, 0.33);
-        }
-        .coding-video-name {
-            margin: 0;
-            color: #0f172a;
-            font-size: 0.9rem;
-            font-weight: 700;
-            line-height: 1.1;
-        }
-        .coding-video-sub {
-            margin: 0.12rem 0 0 0;
-            color: #475569;
-            font-size: 0.77rem;
-            line-height: 1.1;
-        }
-        .coding-video-body {
-            padding: 0.78rem 0.82rem 0.84rem 0.82rem;
-        }
-        .coding-question-stage {
-            margin: 0;
-            color: #0369a1;
-            font-size: 0.73rem;
-            font-weight: 800;
-            letter-spacing: 0.02em;
-            text-transform: uppercase;
-        }
-        .coding-question-title {
-            margin: 0.24rem 0 0 0;
-            color: #0f172a;
-            font-size: 1rem;
-            font-weight: 700;
-            line-height: 1.3;
-        }
-        .coding-question-meta {
-            margin: 0.26rem 0 0 0;
-            color: #334155;
-            font-size: 0.8rem;
-            line-height: 1.32;
-        }
-        .coding-question-text {
-            margin: 0.36rem 0 0 0;
-            color: #1e293b;
-            font-size: 0.81rem;
-            line-height: 1.38;
-        }
-        .coding-question-subhead {
-            margin: 0.5rem 0 0.2rem 0;
-            color: #0f172a;
-            font-size: 0.8rem;
-            font-weight: 700;
-            line-height: 1.2;
-        }
-        .coding-question-list {
-            margin: 0;
-            padding-left: 1.03rem;
-            color: #334155;
-            font-size: 0.79rem;
-            line-height: 1.34;
-        }
-        .coding-question-list li {
-            margin-bottom: 0.12rem;
-        }
-        .coding-stage-card {
-            border: 1px solid #dbeafe;
-            border-radius: 15px;
-            background: linear-gradient(140deg, #ffffff 0%, #f3f8ff 100%);
-            padding: 0.92rem;
-            box-shadow: 0 12px 24px rgba(14, 116, 144, 0.08);
-        }
-        .coding-stage-title {
-            margin: 0;
-            color: #0f172a;
-            font-size: 1.06rem;
-            font-weight: 700;
-            line-height: 1.25;
-        }
-        .coding-stage-meta {
-            margin: 0.38rem 0 0.5rem 0;
-            color: #334155;
-            font-size: 0.82rem;
-            line-height: 1.35;
-        }
-        .coding-room-shell ul {
-            margin-top: 0.2rem;
-        }
-        .st-key-coding_action_ready button,
-        .st-key-coding_action_hint button,
-        .st-key-coding_action_nudge button {
-            border-radius: 999px !important;
-            border: 1px solid #bae6fd !important;
-            background: #f0f9ff !important;
-            color: #0c4a6e !important;
-            font-weight: 700 !important;
-            font-size: 0.77rem !important;
-            min-height: 2rem !important;
-            box-shadow: none !important;
-        }
-        .st-key-coding_action_ready button:hover,
-        .st-key-coding_action_hint button:hover,
-        .st-key-coding_action_nudge button:hover {
-            border-color: #38bdf8 !important;
-            background: #e0f2fe !important;
-        }
-        .st-key-coding_eval_btn button,
-        .st-key-coding_next_stage_btn button,
-        .st-key-coding_load_template_btn button,
-        .st-key-coding_reset_session_btn button,
-        .st-key-coding_back_home_btn button {
-            border-radius: 12px !important;
-            font-weight: 700 !important;
-            min-height: 2.05rem !important;
-        }
-        .st-key-coding_eval_btn button {
-            border: 1px solid #0f766e !important;
-            background: linear-gradient(130deg, #14b8a6 0%, #0ea5e9 100%) !important;
-            color: #ffffff !important;
-            box-shadow: 0 10px 18px rgba(20, 184, 166, 0.26) !important;
-        }
-        .st-key-coding_next_stage_btn button {
-            border: 1px solid #1d4ed8 !important;
-            background: #dbeafe !important;
-            color: #1e3a8a !important;
-        }
-        .st-key-coding_reset_session_btn button {
-            border: 1px solid #fca5a5 !important;
-            background: #fef2f2 !important;
-            color: #b91c1c !important;
-        }
-        .st-key-coding_reset_session_btn button:hover {
-            border-color: #ef4444 !important;
-            background: #fee2e2 !important;
-            color: #991b1b !important;
-        }
-        .st-key-coding_load_template_btn button {
-            border: 1px solid #cbd5e1 !important;
-            background: #ffffff !important;
-            color: #334155 !important;
-            min-height: 1.85rem !important;
-            font-size: 0.74rem !important;
-            margin: 0.35rem 0 0.42rem 0 !important;
-        }
-        .st-key-coding_stage_approach_wrap [data-testid="stTextArea"] > label {
-            color: #334155 !important;
-            font-size: 0.76rem !important;
-            font-weight: 700 !important;
-        }
-        .st-key-coding_stage_approach_wrap textarea {
-            min-height: 112px !important;
-            border-radius: 10px !important;
-            border: 1px solid #cbd5e1 !important;
-            background: #ffffff !important;
-            color: #0f172a !important;
-            line-height: 1.4 !important;
-            font-size: 0.82rem !important;
-        }
-        .coding-score-card {
-            border: 1px solid #bfdbfe;
-            border-radius: 12px;
-            background: #f8fbff;
-            padding: 0.7rem 0.78rem;
-            margin-top: 0.45rem;
-        }
-        .coding-score-card h4 {
-            margin: 0;
-            color: #0f172a;
-            font-size: 0.91rem;
-            line-height: 1.25;
-        }
-        .coding-score-card p {
-            margin: 0.24rem 0 0 0;
-            color: #334155;
-            font-size: 0.79rem;
-            line-height: 1.34;
-        }
-        .coding-workspace-wrap {
-            border: 1px solid #cbd5e1;
-            border-radius: 13px;
-            background:
-                radial-gradient(900px 300px at -12% -30%, rgba(14, 165, 233, 0.12) 0%, transparent 56%),
-                radial-gradient(700px 260px at 110% -28%, rgba(16, 185, 129, 0.1) 0%, transparent 58%),
-                #f8fbff;
-            padding: 0.75rem 0.8rem;
-            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
-            margin-bottom: 0.58rem;
-        }
-        .coding-workspace-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.5rem;
-            margin-bottom: 0.56rem;
-        }
-        .coding-workspace-title {
-            margin: 0;
-            color: #0f172a;
-            font-size: 0.94rem;
-            font-weight: 700;
-            line-height: 1.2;
-        }
-        .coding-workspace-sub {
-            margin: 0.1rem 0 0 0;
-            color: #475569;
-            font-size: 0.74rem;
-            line-height: 1.2;
-        }
-        .coding-workspace-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.28rem;
-            border: 1px solid #7dd3fc;
-            background: #e0f2fe;
-            color: #0c4a6e;
-            border-radius: 999px;
-            padding: 0.18rem 0.54rem;
-            font-size: 0.68rem;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-        .coding-workspace-chips {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 0.43rem;
-        }
-        .coding-tech-chip {
-            border: 1px solid #dbeafe;
-            border-radius: 10px;
-            background: #ffffff;
-            padding: 0.34rem 0.42rem;
-        }
-        .coding-tech-key {
-            margin: 0;
-            color: #64748b;
-            font-size: 0.62rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            line-height: 1.1;
-        }
-        .coding-tech-value {
-            margin: 0.17rem 0 0 0;
-            color: #0f172a;
-            font-size: 0.76rem;
-            font-weight: 700;
-            line-height: 1.2;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .coding-tech-value.timer-live-display {
-            font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
-            font-size: 0.98rem;
-            letter-spacing: 0.03em;
-        }
-        .coding-tech-value.timer-safe {
-            color: #047857;
-        }
-        .coding-tech-value.timer-alert {
-            color: #b91c1c;
-        }
-        .st-key-coding_language_wrap [data-baseweb="select"] > div {
-            background: #ffffff !important;
-            border: 1px solid #cbd5e1 !important;
-            border-radius: 10px !important;
-            color: #0f172a !important;
-            box-shadow: none !important;
-        }
-        .st-key-coding_language_wrap [data-baseweb="select"] span,
-        .st-key-coding_language_wrap [data-baseweb="select"] div {
-            color: #0f172a !important;
-        }
-        .st-key-coding_language_wrap label {
-            color: #475569 !important;
-            font-size: 0.74rem !important;
-            font-weight: 700 !important;
-        }
-        .coding-editor-shell {
-            border: 1px solid #cbd5e1;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #f8fafc;
-            box-shadow: 0 10px 20px rgba(15, 23, 42, 0.11);
-        }
-        .coding-editor-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.5rem;
-            padding: 0.48rem 0.62rem;
-            border-bottom: 1px solid #d1d5db;
-            background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
-        }
-        .coding-editor-tabs {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-        }
-        .coding-editor-tab {
-            border: 1px solid #334155;
-            background: #0b1220;
-            color: #cbd5e1;
-            border-radius: 999px;
-            padding: 0.16rem 0.54rem;
-            font-size: 0.7rem;
-            font-weight: 700;
-            line-height: 1;
-        }
-        .coding-editor-tab.active {
-            border-color: #0ea5e9;
-            color: #e0f2fe;
-            background: rgba(14, 165, 233, 0.2);
-        }
-        .coding-editor-status {
-            color: #334155;
-            font-size: 0.72rem;
-            font-weight: 600;
-            line-height: 1;
-        }
-        .coding-editor-head-left {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.34rem;
-        }
-        .coding-editor-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-        .coding-editor-dot.red { background: #ef4444; }
-        .coding-editor-dot.yellow { background: #eab308; }
-        .coding-editor-dot.green { background: #22c55e; }
-        .coding-editor-file {
-            color: #0f172a;
-            font-size: 0.71rem;
-            font-weight: 700;
-            margin-left: 0.32rem;
-            letter-spacing: 0.01em;
-        }
-        .st-key-coding_editor_shell [data-testid="stTextArea"] > label {
-            color: #334155 !important;
-            font-weight: 600 !important;
-            font-size: 0.77rem !important;
-        }
-        .st-key-coding_editor_shell .zoswi-code-line-gutter {
-            display: none !important;
-            visibility: hidden !important;
-            width: 0 !important;
-            height: 0 !important;
-            overflow: hidden !important;
-        }
-        .st-key-coding_editor_shell [data-testid="stTextArea"].zoswi-code-editor-root {
-            position: static !important;
-        }
-        .st-key-coding_editor_shell {
-            border: 1px solid #bfdbfe;
-            border-top: 0;
-            border-radius: 0 0 12px 12px;
-            background: linear-gradient(135deg, #ffffff 0%, #eff6ff 45%, #ecfeff 100%);
-            box-shadow: 0 12px 24px rgba(30, 64, 175, 0.1);
-            padding: 0.32rem 0.36rem 0.36rem 0.36rem;
-            margin-top: -1px;
-        }
-        .st-key-coding_editor_shell [data-testid="stTextArea"] {
-            border: 1px solid #dbeafe;
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.96);
-            padding: 0.12rem;
-        }
-        .st-key-coding_editor_shell [data-testid="stTextArea"] textarea {
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #cbd5e1 !important;
-            border-radius: 0 0 10px 10px !important;
-            font-family: "JetBrains Mono", "Consolas", "Courier New", monospace !important;
-            font-size: 0.86rem !important;
-            line-height: 1.45 !important;
-            caret-color: #0369a1 !important;
-            min-height: 250px !important;
-            background-image:
-                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='340' height='140' viewBox='0 0 340 140'%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI,Arial,sans-serif' font-size='52' font-weight='700' fill='%230284c7' fill-opacity='0.11'%3EZoSwi%3C/text%3E%3C/svg%3E"),
-                linear-gradient(transparent 96%, rgba(148, 163, 184, 0.06) 96%),
-                linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px) !important;
-            background-repeat: no-repeat, repeat, repeat !important;
-            background-position: center center, 0 0, 0 0 !important;
-            background-size: 220px auto, 100% 1.5rem, 1.5rem 100% !important;
-        }
-        .st-key-coding_editor_shell [data-testid="stTextArea"] textarea:focus {
-            border-color: #0284c7 !important;
-            box-shadow: 0 0 0 1px rgba(2, 132, 199, 0.32) !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    if logo_data_uri:
-        st.markdown(
-            f"""
-            <style>
-            .st-key-coding_editor_shell [data-testid="stTextArea"] textarea {{
-                background-image:
-                    linear-gradient(rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.92)),
-                    url("{logo_data_uri}"),
-                    linear-gradient(transparent 96%, rgba(148, 163, 184, 0.06) 96%),
-                    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px) !important;
-                background-repeat: no-repeat, no-repeat, repeat, repeat !important;
-                background-position: center center, center center, 0 0, 0 0 !important;
-                background-size: 100% 100%, 520px auto, 100% 1.5rem, 1.5rem 100% !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"""
-        <div class="coding-room-shell">
-            <div class="coding-room-header">
-                <div class="coding-room-title">
-                    <h2>ZoSwi Live Coding Room</h2>
-                    <p>One-on-one coding interview simulation for {html.escape(first_name)} using your latest resume and JD analysis.</p>
-                </div>
-                <div class="coding-live-pill"><span class="coding-live-dot"></span>LIVE INTERVIEW FLOW</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if not resume_text or not job_description or not isinstance(analysis, dict):
-        st.warning("Run Resume-JD Analysis first, then launch the coding room.")
-        with st.container(key="coding_back_home_btn"):
-            if st.button("Go To Home", key="coding_go_home_from_empty", use_container_width=False):
-                st.session_state.dashboard_view = "home"
-                st.rerun()
-        return
-
-    source_payload = json.dumps(analysis, sort_keys=True, ensure_ascii=True)
-    source_sig = hashlib.sha256(f"{resume_text}\n##\n{job_description}\n##\n{source_payload}".encode("utf-8")).hexdigest()
-    if st.session_state.get("coding_room_source_sig") != source_sig:
-        with st.spinner("Preparing your 3-stage coding simulation..."):
-            payload = build_coding_stage_payload(resume_text, job_description, analysis)
-        st.session_state.coding_room_payload = payload
-        st.session_state.coding_room_source_sig = source_sig
-        st.session_state.coding_room_stage_index = 0
-        st.session_state.coding_room_stage_scores = {}
-        st.session_state.coding_room_messages = []
-        st.session_state.coding_room_session_started = False
-        st.session_state.coding_room_clear_input = True
-        st.session_state.coding_room_scroll_pending = False
-        st.session_state.coding_room_stage_started_at = {}
-        st.session_state.coding_room_hidden_tests = {}
-        st.session_state.coding_room_stage_approaches = {}
-
-    payload = st.session_state.get("coding_room_payload")
-    if not isinstance(payload, dict) or not isinstance(payload.get("stages"), list) or not payload.get("stages"):
-        st.error("Coding room setup failed. Please click back and run analysis again.")
-        return
-
-    stages = payload["stages"]
-    total_stages = min(CODING_STAGE_COUNT, len(stages))
-    stage_index = int(st.session_state.get("coding_room_stage_index") or 0)
-    stage_index = max(0, min(total_stages - 1, stage_index))
-    st.session_state.coding_room_stage_index = stage_index
-    stage = stages[stage_index]
-    stage_scores = st.session_state.get("coding_room_stage_scores", {})
-    if not isinstance(stage_scores, dict):
-        stage_scores = {}
-    stage_key = str(stage_index)
-    stage_started_at = st.session_state.get("coding_room_stage_started_at", {})
-    if not isinstance(stage_started_at, dict):
-        stage_started_at = {}
-    if stage_key not in stage_started_at:
-        stage_started_at[stage_key] = float(time.time())
-        st.session_state.coding_room_stage_started_at = stage_started_at
-    elapsed_seconds = max(0, int(time.time() - float(stage_started_at.get(stage_key, time.time()))))
-    stage_limit_seconds = max(60, int(stage.get("time_limit_min", 20)) * 60)
-    remaining_seconds = max(0, stage_limit_seconds - elapsed_seconds)
-    timer_expired = remaining_seconds <= 0
-    timer_instance_token = f"{stage_key}_{int(float(stage_started_at.get(stage_key, time.time())))}"
-    timer_dom_id = f"coding_chip_timer_{re.sub(r'[^a-zA-Z0-9_-]', '_', timer_instance_token)}"
-
-    hidden_tests_map = st.session_state.get("coding_room_hidden_tests", {})
-    if not isinstance(hidden_tests_map, dict):
-        hidden_tests_map = {}
-    approaches_map = st.session_state.get("coding_room_stage_approaches", {})
-    if not isinstance(approaches_map, dict):
-        approaches_map = {}
-
-    completed_stages = len([key for key in stage_scores if str(key).isdigit()])
-    progress_value = min(1.0, float(completed_stages) / float(max(1, total_stages)))
-
-    if not st.session_state.get("coding_room_session_started"):
-        intro = str(payload.get("interviewer_intro", "")).strip()
-        if intro:
-            append_coding_room_message("assistant", intro)
-        stage_opening = (
-            f"Stage {stage_index + 1}/{total_stages}: {stage.get('title', '')}. "
-            "When ready, summarize your approach, then complete the TODO blocks in starter code."
-        )
-        append_coding_room_message("assistant", stage_opening)
-        st.session_state.coding_room_session_started = True
-
-    skills = payload.get("detected_skills", [])
-    if isinstance(skills, list) and skills:
-        st.caption(f"Skill alignment: {', '.join(str(skill) for skill in skills[:6])}")
-    st.progress(progress_value, text=f"Stage progress: {completed_stages}/{total_stages} completed")
-
-    stage_question_text = str(stage.get("question", "") or stage.get("challenge", "")).strip()
-    stage_completion_steps = stage.get("completion_steps", [])
-    if not isinstance(stage_completion_steps, list) or not stage_completion_steps:
-        stage_completion_steps = stage.get("requirements", [])
-    question_requirements_html = "".join(
-        f"<li>{html.escape(str(req))}</li>" for req in stage_completion_steps[:4]
-    )
-    question_hints_html = "".join(
-        f"<li>{html.escape(str(hint))}</li>" for hint in stage.get("hint_starters", [])[:3]
-    )
-    question_sample_case = str(stage.get("sample_case", "")).strip()
-
-    left_col, right_col = st.columns([0.96, 1.34], gap="medium")
-    with left_col:
-        st.markdown(
-            f"""
-            <div class="coding-video-shell">
-                <div class="coding-video-head">
-                    <div style="display:flex;align-items:center;gap:0.52rem;">
-                        <span class="coding-memoji">\U0001F916</span>
-                        <div>
-                            <p class="coding-video-name">ZoSwi Interview Bot</p>
-                            <p class="coding-video-sub">Live stage {stage_index + 1} interviewer</p>
-                        </div>
-                    </div>
-                    <div class="coding-live-pill"><span class="coding-live-dot"></span>ACTIVE</div>
-                </div>
-                <div class="coding-video-body">
-                    <p class="coding-question-stage">Stage {stage_index + 1} Question</p>
-                    <p class="coding-question-title">{html.escape(str(stage.get("title", "")))}</p>
-                    <p class="coding-question-meta"><strong>Focus:</strong> {html.escape(str(stage.get("skill_focus", "")))} | <strong>Time:</strong> {int(stage.get("time_limit_min", 20))} min</p>
-                    <p class="coding-question-text"><strong>Scenario:</strong> {html.escape(str(stage.get("scenario", "")))}</p>
-                    <p class="coding-question-text"><strong>Question:</strong> {html.escape(stage_question_text)}</p>
-                    {f'<p class="coding-question-text"><strong>Sample:</strong> {html.escape(question_sample_case)}</p>' if question_sample_case else ''}
-                    <p class="coding-question-subhead">Complete These TODOs</p>
-                    <ul class="coding-question-list">{question_requirements_html}</ul>
-                    <p class="coding-question-subhead">Hint Starters</p>
-                    <ul class="coding-question-list">{question_hints_html}</ul>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.container(height=320):
-            chat_history_container = st.container()
-            live_reply_container = st.container()
-            with chat_history_container:
-                for msg in st.session_state.get("coding_room_messages", []):
-                    st.markdown(
-                        format_zoswi_message_html(
-                            msg.get("role", "assistant"),
-                            msg.get("content", ""),
-                            first_name,
-                        ),
-                        unsafe_allow_html=True,
-                    )
-            if bool(st.session_state.get("coding_room_scroll_pending", False)):
-                st.markdown('<div id="zoswi-scroll-anchor"></div>', unsafe_allow_html=True)
-                render_zoswi_autoscroll()
-                st.session_state.coding_room_scroll_pending = False
-
-        action_cols = st.columns(3, gap="small")
-        with action_cols[0]:
-            with st.container(key="coding_action_ready"):
-                ready_clicked = st.button("\U0001F60A I am ready", key="coding_action_ready_btn", use_container_width=True)
-        with action_cols[1]:
-            with st.container(key="coding_action_hint"):
-                hint_clicked = st.button("\U0001F914 Give hint", key="coding_action_hint_btn", use_container_width=True)
-        with action_cols[2]:
-            with st.container(key="coding_action_nudge"):
-                nudge_clicked = st.button("\u23ED Move forward", key="coding_action_nudge_btn", use_container_width=True)
-
-        pending_action = ""
-        pending_user_message = ""
-        if ready_clicked:
-            pending_action = "ready"
-            pending_user_message = "I am ready. Please continue."
-        elif hint_clicked:
-            pending_action = "hint"
-            pending_user_message = "I need a hint for this stage."
-        elif nudge_clicked:
-            pending_action = "nudge"
-            pending_user_message = "Move to the next interview follow-up question."
-        if pending_action:
-            append_coding_room_message("user", pending_user_message)
-
-        with st.container(key="coding_room_input_wrap"):
-            input_cols = st.columns([9, 1])
-            with input_cols[0]:
-                candidate_message = st.text_input(
-                    "Message interviewer",
-                    key="coding_room_user_input",
-                    on_change=request_coding_room_submit,
-                    label_visibility="collapsed",
-                    placeholder="Tell your approach or ask clarifications...",
-                )
-            with input_cols[1]:
-                send_message = st.button("\u2191", key="coding_room_send_btn", use_container_width=True, help="Send")
-
-        submit_requested = bool(send_message) or bool(st.session_state.get("coding_room_submit"))
-        if submit_requested:
-            st.session_state.coding_room_submit = False
-            clean_message = str(candidate_message or "").strip()
-            if clean_message:
-                pending_action = "message"
-                pending_user_message = clean_message
-                append_coding_room_message("user", clean_message)
-                st.session_state.coding_room_clear_input = True
-
-        if pending_action:
-            with live_reply_container:
-                response_placeholder = st.empty()
-                response_placeholder.markdown(
-                    format_zoswi_message_html("assistant", "...", first_name),
-                    unsafe_allow_html=True,
-                )
-                response_text = ""
-                for chunk in stream_coding_interviewer_reply(
-                    pending_action,
-                    pending_user_message,
-                    stage,
-                    stage_index,
-                    first_name,
-                ):
-                    response_text += str(chunk)
-                    response_placeholder.markdown(
-                        format_zoswi_message_html("assistant", response_text + " \u258c", first_name),
-                        unsafe_allow_html=True,
-                    )
-                if not response_text.strip():
-                    response_text = "I did not get that fully. Share your approach in 2-3 steps and proceed with code."
-                response_placeholder.markdown(
-                    format_zoswi_message_html("assistant", response_text, first_name),
-                    unsafe_allow_html=True,
-                )
-            append_coding_room_message("assistant", response_text)
-            st.rerun()
-
-    with right_col:
-        difficulty_label = "Medium" if stage_index == 0 else ("Hard" if stage_index == 1 else "Expert")
-        timer_value_label = "Expired" if timer_expired else format_timer_label(remaining_seconds)
-        timer_value_class = "timer-alert" if timer_expired else "timer-safe"
-        st.markdown(
-            f"""
-            <div class="coding-workspace-wrap">
-                <div class="coding-workspace-top">
-                    <div>
-                        <p class="coding-workspace-title">Coding Workspace</p>
-                        <p class="coding-workspace-sub">Focused implementation zone with stage-linked evaluation.</p>
-                    </div>
-                    <span class="coding-workspace-pill">\u2699 RUN PHASE</span>
-                </div>
-                <div class="coding-workspace-chips">
-                    <div class="coding-tech-chip">
-                        <p class="coding-tech-key">Stage</p>
-                        <p class="coding-tech-value">{stage_index + 1}/{total_stages}</p>
-                    </div>
-                    <div class="coding-tech-chip">
-                        <p class="coding-tech-key">Difficulty</p>
-                        <p class="coding-tech-value">{difficulty_label}</p>
-                    </div>
-                    <div class="coding-tech-chip">
-                        <p class="coding-tech-key">Focus</p>
-                        <p class="coding-tech-value">{html.escape(str(stage.get("skill_focus", "")))}</p>
-                    </div>
-                    <div class="coding-tech-chip">
-                        <p class="coding-tech-key">Timer</p>
-                        <p id="{timer_dom_id}" class="coding-tech-value timer-live-display {timer_value_class}">{timer_value_label}</p>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if timer_expired:
-            st.warning("Stage timer expired. Click Next Stage to auto-evaluate your current submission and continue.")
-        render_live_stage_timer_widget(remaining_seconds, timer_dom_id, timer_instance_token)
-
-        language_widget_key = f"coding_room_language_stage_{stage_index}"
-        if language_widget_key not in st.session_state:
-            st.session_state[language_widget_key] = st.session_state.get("coding_room_language", CODING_LANGUAGES[0])
-        with st.container(key="coding_language_wrap"):
-            selected_language = st.selectbox(
-                "Runtime / Language",
-                options=CODING_LANGUAGES,
-                key=language_widget_key,
-            )
-        st.session_state.coding_room_language = selected_language
-        language_token = _normalize_language_token(selected_language)
-        language_ext_map = {
-            "python": "py",
-            "java": "java",
-            "javascript": "js",
-            "typescript": "ts",
-            "go": "go",
-            "c": "cpp",
-            "c++": "cpp",
-        }
-        file_ext = language_ext_map.get(language_token, "txt")
-        code_key = f"coding_room_code_stage_{stage_index}_{language_token}"
-        if code_key not in st.session_state:
-            st.session_state[code_key] = build_stage_starter_code(stage, selected_language)
-        st.markdown(
-            f"""
-            <div class="coding-editor-shell">
-                <div class="coding-editor-head">
-                    <div class="coding-editor-tabs">
-                        <div class="coding-editor-head-left">
-                            <span class="coding-editor-dot red"></span>
-                            <span class="coding-editor-dot yellow"></span>
-                            <span class="coding-editor-dot green"></span>
-                            <span class="coding-editor-file">stage_{stage_index + 1}_solution.{file_ext}</span>
-                        </div>
-                    </div>
-                    <span class="coding-editor-status">{html.escape(selected_language)} | {int(stage.get("time_limit_min", 20))}m slot</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.container(key="coding_load_template_btn"):
-            load_template_clicked = st.button(
-                "Reload Starter Code",
-                key=f"coding_load_template_{stage_index}_{language_token}",
-                use_container_width=False,
-            )
-        if load_template_clicked:
-            st.session_state[code_key] = build_stage_starter_code(stage, selected_language)
-            st.rerun()
-        with st.container(key="coding_editor_shell"):
-            st.text_area(
-                f"Stage {stage_index + 1} Solution",
-                key=code_key,
-                height=520,
-                placeholder=f"Write your {selected_language} solution here...",
-            )
-        render_solution_editor_security_guard()
-        st.caption("Copy/paste is disabled in the solution editor for assessment integrity.")
-
-        stage_code_current = str(st.session_state.get(code_key, "")).strip()
-        stage_code_hash = hashlib.sha256(stage_code_current.encode("utf-8")).hexdigest()
-        raw_hidden_result = hidden_tests_map.get(stage_key, {})
-        if not isinstance(raw_hidden_result, dict):
-            raw_hidden_result = {}
-        hidden_result = (
-            raw_hidden_result
-            if str(raw_hidden_result.get("code_hash", "")) == stage_code_hash
-            else {}
-        )
-        hidden_ran = bool(hidden_result.get("ran", False))
-        hidden_ready_for_eval = bool(hidden_result.get("ready_for_evaluation", False))
-
-        if raw_hidden_result and not hidden_result:
-            st.caption("Code changed after the last backend check. Click Evaluate Stage to run hidden tests again.")
-        if hidden_result:
-            total_tests = int(hidden_result.get("total", 0) or 0)
-            passed_tests = int(hidden_result.get("passed", 0) or 0)
-            failed_cases = hidden_result.get("failed_cases", [])
-            if not isinstance(failed_cases, list):
-                failed_cases = []
-            status_label = "Ready for Evaluate Stage" if hidden_ready_for_eval else "Fix hidden test failures first"
-            status_color = "green" if hidden_ready_for_eval else "orange"
-            st.markdown(
-                f"Hidden tests: **{passed_tests}/{max(1, total_tests)} passed** | :{status_color}[{status_label}]"
-            )
-            summary_text = str(hidden_result.get("summary", "")).strip()
-            if summary_text:
-                st.caption(summary_text)
-            if failed_cases:
-                st.caption(f"Failed cases: {', '.join(str(item) for item in failed_cases[:5])}")
-
-        approach_key = f"coding_stage_approach_{stage_index}"
-        if approach_key not in st.session_state:
-            st.session_state[approach_key] = str(approaches_map.get(stage_key, "")).strip()
-        with st.container(key="coding_stage_approach_wrap"):
-            st.text_area(
-                "Your Approach (required before Next Stage unless timer expires)",
-                key=approach_key,
-                height=120,
-                placeholder="Explain your approach, edge cases, and complexity considerations...",
-            )
-        stage_approach_text = str(st.session_state.get(approach_key, "")).strip()
-        approach_ok, approach_error = validate_stage_approach_text(stage_approach_text)
-        if stage_approach_text and not approach_ok:
-            st.warning(approach_error)
-        if approach_ok:
-            st.caption("Approach validation: ready")
-
-        has_stage_score = stage_key in stage_scores
-        can_go_next = timer_expired or (approach_ok and has_stage_score)
-        action_row = st.columns(3, gap="small")
-        with action_row[0]:
-            with st.container(key="coding_eval_btn"):
-                evaluate_clicked = st.button(
-                    "Evaluate Stage",
-                    key=f"coding_eval_stage_btn_{stage_index}",
-                    use_container_width=True,
-                    disabled=timer_expired,
-                )
-        with action_row[1]:
-            with st.container(key="coding_next_stage_btn"):
-                next_label = "Next Stage" if stage_index < total_stages - 1 else "Finish Evaluation"
-                next_clicked = st.button(
-                    next_label,
-                    key=f"coding_next_stage_btn_{stage_index}",
-                    use_container_width=True,
-                    disabled=not can_go_next,
-                )
-        with action_row[2]:
-            with st.container(key="coding_reset_session_btn"):
-                reset_clicked = st.button(
-                    "Reset Session",
-                    key=f"coding_reset_session_main_btn_{stage_index}",
-                    use_container_width=True,
-                )
-        if not timer_expired:
-            st.caption("Evaluate Stage runs hidden tests automatically in the backend.")
-        else:
-            st.caption("Timer expired: Next Stage will auto-evaluate your current code in the backend before moving on.")
-
-        if evaluate_clicked:
-            stage_code = stage_code_current
-            hidden_result_payload = run_hidden_tests_for_submission(
-                stage=stage,
-                code=stage_code,
-                language=selected_language,
-                resume_text=resume_text,
-                job_description=job_description,
-            )
-            updated_hidden = dict(hidden_tests_map)
-            hidden_result_payload["code_hash"] = stage_code_hash
-            updated_hidden[stage_key] = hidden_result_payload
-            st.session_state.coding_room_hidden_tests = updated_hidden
-            append_coding_room_message(
-                "assistant",
-                (
-                    f"Hidden tests auto-run for Stage {stage_index + 1}: "
-                    f"{int(hidden_result_payload.get('passed', 0))}/{int(hidden_result_payload.get('total', 0))} passed."
-                ),
-            )
-            if not bool(hidden_result_payload.get("ready_for_evaluation", False)):
-                append_coding_room_message(
-                    "assistant",
-                    "Evaluation blocked because hidden tests are not passing yet. Update code and evaluate again.",
-                )
-                st.rerun()
-            result = evaluate_coding_submission(
-                stage=stage,
-                code=stage_code,
-                language=selected_language,
-                resume_text=resume_text,
-                job_description=job_description,
-            )
-            updated_scores = dict(stage_scores)
-            updated_scores[str(stage_index)] = result
-            st.session_state.coding_room_stage_scores = updated_scores
-            append_coding_room_message(
-                "assistant",
-                (
-                    f"Stage {stage_index + 1} evaluation complete: {result.get('score', 0)}% ({result.get('verdict', '')}). "
-                    f"Next step: {result.get('next_step', '')}"
-                ),
-            )
-            st.rerun()
-
-        current_stage_result = stage_scores.get(str(stage_index), {})
-        if isinstance(current_stage_result, dict) and current_stage_result:
-            score = int(current_stage_result.get("score", 0))
-            st.markdown(
-                f"""
-                <div class="coding-score-card">
-                    <h4>Stage {stage_index + 1} Score: {score}% ({html.escape(str(current_stage_result.get("verdict", "")))})</h4>
-                    <p><strong>Strengths:</strong> {html.escape('; '.join(current_stage_result.get("strengths", [])))}</p>
-                    <p><strong>Improvements:</strong> {html.escape('; '.join(current_stage_result.get("improvements", [])))}</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        if next_clicked:
-            if not timer_expired and not approach_ok:
-                st.error(approach_error)
-            else:
-                updated_approaches = dict(approaches_map)
-                if stage_approach_text:
-                    updated_approaches[stage_key] = stage_approach_text
-                st.session_state.coding_room_stage_approaches = updated_approaches
-
-                updated_scores = dict(stage_scores)
-                if stage_key not in updated_scores:
-                    if timer_expired:
-                        stage_code = stage_code_current
-                        hidden_result_payload = run_hidden_tests_for_submission(
-                            stage=stage,
-                            code=stage_code,
-                            language=selected_language,
-                            resume_text=resume_text,
-                            job_description=job_description,
-                        )
-                        latest_hidden_tests = st.session_state.get("coding_room_hidden_tests", {})
-                        if not isinstance(latest_hidden_tests, dict):
-                            latest_hidden_tests = {}
-                        updated_hidden = dict(latest_hidden_tests)
-                        hidden_result_payload["code_hash"] = stage_code_hash
-                        updated_hidden[stage_key] = hidden_result_payload
-                        st.session_state.coding_room_hidden_tests = updated_hidden
-                        append_coding_room_message(
-                            "assistant",
-                            (
-                                f"Timer expiry auto-check for Stage {stage_index + 1}: "
-                                f"{int(hidden_result_payload.get('passed', 0))}/{int(hidden_result_payload.get('total', 0))} hidden tests passed."
-                            ),
-                        )
-
-                        result = evaluate_coding_submission(
-                            stage=stage,
-                            code=stage_code,
-                            language=selected_language,
-                            resume_text=resume_text,
-                            job_description=job_description,
-                        )
-                        if not bool(hidden_result_payload.get("ready_for_evaluation", False)):
-                            existing_improvements = result.get("improvements", [])
-                            if not isinstance(existing_improvements, list):
-                                existing_improvements = [str(existing_improvements)]
-                            result["improvements"] = [
-                                "Timer-expiry auto-evaluation used the available code even though hidden tests were not fully passing.",
-                                *[str(item) for item in existing_improvements if str(item).strip()],
-                            ][:5]
-                        result["next_step"] = "Stage timed out. Result captured from current submission and moved to next stage."
-                        updated_scores[stage_key] = result
-                        st.session_state.coding_room_stage_scores = updated_scores
-                        append_coding_room_message(
-                            "assistant",
-                            (
-                                f"Stage {stage_index + 1} auto-evaluated at timeout: "
-                                f"{result.get('score', 0)}% ({result.get('verdict', '')})."
-                            ),
-                        )
-                    else:
-                        st.error("Run Evaluate Stage first (or wait for timer expiry) before moving ahead.")
-                        updated_scores = {}
-
-                if updated_scores:
-                    if stage_index < total_stages - 1:
-                        st.session_state.coding_room_stage_index = stage_index + 1
-                        next_stage = stages[stage_index + 1]
-                        append_coding_room_message(
-                            "assistant",
-                            (
-                                f"Great. Moving to Stage {stage_index + 2}/{total_stages}: {next_stage.get('title', '')}. "
-                                "Share approach first, then complete the starter code."
-                            ),
-                        )
-                        st.rerun()
-                    overall_scores = []
-                    final_scores = st.session_state.get("coding_room_stage_scores", {})
-                    if not isinstance(final_scores, dict):
-                        final_scores = {}
-                    for idx in range(total_stages):
-                        result = final_scores.get(str(idx))
-                        if isinstance(result, dict):
-                            overall_scores.append(int(result.get("score", 0)))
-                    overall_score = int(sum(overall_scores) / max(1, len(overall_scores)))
-                    st.success(
-                        f"Coding journey complete. Overall score: {overall_score}% ({summarize_coding_stage_score(overall_score)})."
-                    )
-
-        if reset_clicked:
-            st.session_state.coding_room_source_sig = ""
-            st.session_state.coding_room_payload = None
-            st.session_state.coding_room_stage_index = 0
-            st.session_state.coding_room_stage_scores = {}
-            st.session_state.coding_room_messages = []
-            st.session_state.coding_room_session_started = False
-            st.session_state.coding_room_clear_input = True
-            st.session_state.coding_room_scroll_pending = False
-            st.session_state.coding_room_stage_started_at = {}
-            st.session_state.coding_room_hidden_tests = {}
-            st.session_state.coding_room_stage_approaches = {}
-            st.rerun()
-
-    if stage_scores:
-        st.markdown("### Coding Evaluation Snapshot")
-        approach_summary_map = st.session_state.get("coding_room_stage_approaches", {})
-        if not isinstance(approach_summary_map, dict):
-            approach_summary_map = {}
-        summary_rows: list[dict[str, str]] = []
-        for idx in range(total_stages):
-            result = stage_scores.get(str(idx), {})
-            approach_status = "Provided" if str(approach_summary_map.get(str(idx), "")).strip() else "Missing"
-            if not isinstance(result, dict) or not result:
-                summary_rows.append(
-                    {
-                        "Stage": f"Stage {idx + 1}",
-                        "Title": str(stages[idx].get("title", "")),
-                        "Score": "--",
-                        "Verdict": "Pending",
-                        "Approach": approach_status,
-                    }
-                )
-                continue
-            summary_rows.append(
-                {
-                    "Stage": f"Stage {idx + 1}",
-                    "Title": str(stages[idx].get("title", "")),
-                    "Score": f"{int(result.get('score', 0))}%",
-                    "Verdict": str(result.get("verdict", "")),
-                    "Approach": approach_status,
-                }
-            )
-        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-
+    return _impl(user)
 
 def render_main_screen() -> None:
     user = st.session_state.user
@@ -8805,6 +8144,11 @@ def render_main_screen() -> None:
     if view == "ai_workspace":
         st.session_state.bot_open = False
         render_ai_workspace_view(user)
+        render_zoswi_outside_minimize_listener(False)
+        return
+    if view == "careers":
+        st.session_state.bot_open = False
+        render_careers_view(user)
         render_zoswi_outside_minimize_listener(False)
         return
     if view == "coding_room":

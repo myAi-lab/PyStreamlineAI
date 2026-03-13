@@ -40,7 +40,32 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
 5. Optional app timezone for greetings/UI time context:
    - Set `APP_TIMEZONE` (IANA name, for example `America/New_York`).
    - If not set, app defaults to `America/New_York`.
-6. Optional OAuth login (recommended for refresh-persistent login):
+6. Optional live job search API for Job Match + Visa/H1B MVP:
+   - Supported source profiles:
+     - `Adzuna` (requires app credentials)
+     - `Remotive` (no key required)
+     - `USAJobs` (requires API key + user agent)
+   - Adzuna credentials (env vars or `.streamlit/secrets.toml`):
+     ```powershell
+     $env:ADZUNA_APP_ID="your_app_id"
+     $env:ADZUNA_APP_KEY="your_app_key"
+     $env:ADZUNA_COUNTRY="us"
+     ```
+   - USAJobs credentials (env vars or `.streamlit/secrets.toml`):
+     ```powershell
+     $env:USAJOBS_AUTH_KEY="your_usajobs_auth_key"
+     $env:USAJOBS_USER_AGENT="you@yourdomain.com"
+     ```
+   - Secrets alternative:
+     ```toml
+     [jobs]
+     adzuna_app_id = "your_app_id"
+     adzuna_app_key = "your_app_key"
+     adzuna_country = "us"
+     usajobs_auth_key = "your_usajobs_auth_key"
+     usajobs_user_agent = "you@yourdomain.com"
+     ```
+7. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)
    - Set `[auth].redirect_uri` to your deployed callback URL:
@@ -54,7 +79,7 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      - Use metadata URL: `https://www.linkedin.com/oauth/.well-known/openid-configuration`
      - Use scopes: `openid profile email`
    - If Google/LinkedIn rejects localhost callback, use your HTTPS app URL (or HTTPS tunnel) and set `auth.redirect_uri` to that callback
-7. Run:
+8. Run:
    ```bash
    streamlit run app.py
    ```
@@ -140,3 +165,12 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
   - `Excellent`
   - `Perfect Match`
 - On-screen AI bot (memoji launcher) with expand, minimize, and close controls.
+- Job Match + Visa/H1B MVP:
+  - Dedicated `ZoSwi Careers` page (aggregates Adzuna + Remotive + USAJobs).
+  - Careers profile modes: `Resume + JD` or `Resume Only` (upload directly in Careers).
+  - Search live jobs by role + preferred location across all supported sources.
+  - Easy Check filters for sponsorship and position types (`Full-Time`, `Contract`, `W2`, `C2C`, `Part-Time`).
+  - Configure up to 15 ranked results per search.
+  - Rank opportunities against uploaded resume.
+  - Infer sponsorship/H1B signal from job text and highlight apply readiness.
+  - Open direct apply links and store recent job searches in `job_search_history`.

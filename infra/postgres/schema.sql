@@ -23,6 +23,19 @@ CREATE TABLE IF NOT EXISTS analysis_history (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS job_search_history (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id),
+    source_profile TEXT NOT NULL DEFAULT 'Adzuna',
+    role_query TEXT NOT NULL,
+    preferred_location TEXT,
+    visa_status TEXT,
+    sponsorship_required INTEGER NOT NULL DEFAULT 0,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    results_json TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(id),
@@ -115,6 +128,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_history_user_id ON analysis_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_job_search_history_user_id ON job_search_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_job_search_history_created_at ON job_search_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history(session_id);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id);
