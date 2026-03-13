@@ -10,6 +10,9 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
     resume_text = str(st.session_state.get("latest_resume_text", "")).strip()
     job_description = str(st.session_state.get("latest_job_description", "")).strip()
     logo_data_uri = get_logo_data_uri()
+    is_mobile = is_mobile_browser()
+    interviewer_chat_height = 260 if is_mobile else 320
+    editor_height = 360 if is_mobile else 520
     # One-time cleanup for legacy autoscroll observers that can cause scroll jitter while typing.
     render_zoswi_autoscroll_cleanup_once()
     if st.session_state.get("coding_room_clear_input"):
@@ -489,6 +492,61 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
             border-color: #0284c7 !important;
             box-shadow: 0 0 0 1px rgba(2, 132, 199, 0.32) !important;
         }
+        @media (max-width: 980px) {
+            .coding-room-shell {
+                padding: 0.75rem 0.75rem 0.68rem 0.75rem;
+            }
+            .coding-room-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.45rem;
+            }
+            .coding-room-title h2 {
+                font-size: 1.2rem;
+            }
+            .coding-room-title p {
+                font-size: 0.8rem;
+            }
+            .coding-video-shell {
+                min-height: auto;
+            }
+            .coding-video-body {
+                padding: 0.62rem 0.64rem 0.68rem 0.64rem;
+            }
+            .coding-question-title {
+                font-size: 0.9rem;
+            }
+            .coding-question-meta,
+            .coding-question-text,
+            .coding-question-list {
+                font-size: 0.76rem;
+            }
+            .coding-workspace-top {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .coding-workspace-chips {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .st-key-coding_main_cols_wrap [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.6rem !important;
+            }
+            .st-key-coding_main_cols_wrap [data-testid="column"] {
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+                width: 100% !important;
+            }
+            .st-key-coding_room_input_wrap [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.32rem !important;
+            }
+            .st-key-coding_room_input_wrap [data-testid="column"] {
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+                width: 100% !important;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -618,7 +676,8 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
     )
     question_sample_case = str(stage.get("sample_case", "")).strip()
 
-    left_col, right_col = st.columns([0.96, 1.34], gap="medium")
+    with st.container(key="coding_main_cols_wrap"):
+        left_col, right_col = st.columns([0.96, 1.34], gap="medium")
     with left_col:
         st.markdown(
             f"""
@@ -649,7 +708,7 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
             """,
             unsafe_allow_html=True,
         )
-        with st.container(height=320):
+        with st.container(height=interviewer_chat_height):
             chat_history_container = st.container()
             live_reply_container = st.container()
             with chat_history_container:
@@ -693,7 +752,7 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
             append_coding_room_message("user", pending_user_message)
 
         with st.container(key="coding_room_input_wrap"):
-            input_cols = st.columns([9, 1])
+            input_cols = st.columns([8.2, 1.8]) if is_mobile else st.columns([9, 1])
             with input_cols[0]:
                 candidate_message = st.text_input(
                     "Message interviewer",
@@ -839,7 +898,7 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
             st.text_area(
                 f"Stage {stage_index + 1} Solution",
                 key=code_key,
-                height=520,
+                height=editor_height,
                 placeholder=f"Write your {selected_language} solution here...",
             )
         render_solution_editor_security_guard()

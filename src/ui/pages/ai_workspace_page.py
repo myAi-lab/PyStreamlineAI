@@ -9,6 +9,8 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
     user_name_label = first_name if first_name else "Candidate"
     email = str(user.get("email", "")).strip().lower()
     logo_data_uri = get_logo_data_uri()
+    is_mobile = is_mobile_browser()
+    chat_panel_height = 420 if is_mobile else 560
 
     if st.session_state.get("ai_workspace_clear_input"):
         st.session_state.ai_workspace_input = ""
@@ -26,18 +28,24 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         # Clean up legacy user entries that may contain full attached-file payloads.
         current_msgs = st.session_state.get("ai_workspace_messages", [])
         if isinstance(current_msgs, list):
-            updated_msgs: list[dict[str, str]] = []
+            updated_msgs: list[dict[str, Any]] = []
             changed = False
             for msg in current_msgs:
+                if not isinstance(msg, dict):
+                    changed = True
+                    continue
                 role = str(msg.get("role", "")).strip().lower()
                 raw_content = str(msg.get("content", ""))
                 if role == "user":
                     compact = compress_ai_workspace_user_message(raw_content)
                     if compact != raw_content:
                         changed = True
-                    updated_msgs.append({"role": "user", "content": compact})
+                    updated_message = dict(msg)
+                    updated_message["role"] = "user"
+                    updated_message["content"] = compact
+                    updated_msgs.append(updated_message)
                 else:
-                    updated_msgs.append({"role": "assistant", "content": raw_content})
+                    updated_msgs.append(dict(msg))
             if changed:
                 st.session_state.ai_workspace_messages = updated_msgs
 
@@ -175,43 +183,10 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             align-items: center !important;
         }
         .st-key-ai_workspace_prefix_wrap {
-            position: relative !important;
-            min-height: 2rem !important;
             display: flex !important;
             align-items: center !important;
-            overflow: visible !important;
-            margin-right: -0.18rem !important;
-        }
-        .aiws-prefix-visual {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.24rem;
-            min-height: 2rem;
-            color: #0f172a;
-            white-space: nowrap;
-            user-select: none;
-            pointer-events: none;
-        }
-        .aiws-prefix-plus {
-            font-size: 1.5rem;
-            line-height: 1;
-            font-weight: 900;
-            color: #082f49;
-            text-shadow: 0 1px 0 rgba(255, 255, 255, 0.88), 0 0 1px rgba(8, 47, 73, 0.2);
-            margin-right: 0.02rem;
-        }
-        .aiws-prefix-brand {
-            font-size: 0.82rem;
-            font-weight: 900;
-            letter-spacing: 0.01em;
-            color: #8b5cf6;
-            background: linear-gradient(120deg, #67e8f9 0%, #60a5fa 34%, #a78bfa 68%, #c084fc 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            line-height: 1;
-            position: relative;
-            top: 2px;
+            min-height: 2rem !important;
+            justify-content: flex-start !important;
         }
         .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] {
             margin-bottom: 0 !important;
@@ -303,36 +278,46 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             display: none !important;
         }
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploader"] {
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 1.5rem !important;
-            min-width: 1.5rem !important;
-            max-width: 1.5rem !important;
+            position: relative !important;
+            width: 2rem !important;
+            min-width: 2rem !important;
+            max-width: 2rem !important;
             height: 2rem !important;
             min-height: 2rem !important;
-            overflow: hidden !important;
-            padding: 0 !important;
             margin: 0 !important;
-            z-index: 2 !important;
+            padding: 0 !important;
+            overflow: visible !important;
         }
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] {
-            border-radius: 0 !important;
+            border-radius: 10px !important;
             padding: 0 !important;
             min-height: 2rem !important;
             height: 2rem !important;
-            width: 1.5rem !important;
-            border: 0 !important;
-            background: transparent !important;
+            width: 2rem !important;
+            min-width: 2rem !important;
+            border: 1px solid #bfdbfe !important;
+            background: linear-gradient(180deg, #ffffff 0%, #eff6ff 100%) !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            box-shadow: none !important;
+            box-shadow: 0 1px 2px rgba(30, 58, 138, 0.1) !important;
             position: relative !important;
-            overflow: hidden !important;
+            overflow: visible !important;
+            cursor: pointer !important;
         }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"]::before {
-            content: "" !important;
+        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"]::after {
+            content: "+" !important;
+            position: absolute !important;
+            inset: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 1.2rem !important;
+            line-height: 1 !important;
+            font-weight: 900 !important;
+            color: #0c4a6e !important;
+            pointer-events: none !important;
+            z-index: 1 !important;
         }
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] button {
             position: absolute !important;
@@ -351,6 +336,15 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             cursor: pointer !important;
             z-index: 2 !important;
         }
+        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] input[type="file"] {
+            position: absolute !important;
+            inset: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            z-index: 3 !important;
+        }
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"],
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"] > div,
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzoneInstructions"] small,
@@ -365,11 +359,9 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             display: none !important;
         }
         .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"]:hover {
-            border: 0 !important;
-            background: transparent !important;
-        }
-        .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] > div {
-            display: none !important;
+            border-color: #93c5fd !important;
+            background: #dbeafe !important;
+            box-shadow: 0 2px 6px rgba(30, 58, 138, 0.14) !important;
         }
         .st-key-ai_workspace_send_btn button {
             min-height: 2rem !important;
@@ -480,6 +472,37 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             white-space: pre-wrap;
             word-break: break-word;
         }
+        .aiws-msg-text strong {
+            font-weight: 800;
+            color: #0b1220;
+        }
+        .aiws-msg-text code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            background: rgba(148, 163, 184, 0.18);
+            border: 1px solid rgba(148, 163, 184, 0.32);
+            border-radius: 6px;
+            padding: 0.05rem 0.28rem;
+            font-size: 0.78em;
+        }
+        .aiws-msg-image .aiws-msg-text {
+            margin-bottom: 0.38rem;
+        }
+        .aiws-msg-image-wrap {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid #bfdbfe;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            overflow: hidden;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+        }
+        .aiws-msg-image-wrap img {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            max-height: min(62vh, 520px);
+            object-fit: contain;
+            margin: 0 auto;
+        }
         .aiws-input-note {
             margin: 0.18rem auto 0.08rem auto;
             text-align: center;
@@ -499,6 +522,110 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             }
             100% {
                 opacity: 0.42;
+            }
+        }
+        .aiws-attach-hint {
+            margin: 0;
+            color: #6b7280;
+            font-size: 0.69rem;
+            font-weight: 600;
+            line-height: 1.25;
+            letter-spacing: 0.01em;
+            animation: aiwsAttachmentBlink 1.18s ease-in-out infinite;
+            width: fit-content;
+            max-width: 100%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        @keyframes aiwsAttachmentBlink {
+            0% {
+                opacity: 0.4;
+            }
+            50% {
+                opacity: 0.96;
+            }
+            100% {
+                opacity: 0.4;
+            }
+        }
+        .st-key-ai_workspace_attachment_hint_wrap {
+            margin: 0.02rem 0 0.08rem 0.08rem !important;
+        }
+        .st-key-ai_workspace_attachment_hint_wrap [data-testid="stHorizontalBlock"] {
+            width: fit-content !important;
+            align-items: center !important;
+            gap: 0.16rem !important;
+        }
+        .st-key-ai_workspace_attachment_hint_wrap [data-testid="column"] {
+            padding: 0 !important;
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div[class*="st-key-ai_workspace_attachment_remove_btn_"] {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+        }
+        div[class*="st-key-ai_workspace_attachment_remove_btn_"] button {
+            width: auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            height: auto !important;
+            min-height: 0 !important;
+            padding: 0 0.04rem !important;
+            border-radius: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            color: #64748b !important;
+            font-size: 0.76rem !important;
+            font-weight: 900 !important;
+            line-height: 1 !important;
+            box-shadow: none !important;
+        }
+        div[class*="st-key-ai_workspace_attachment_remove_btn_"] button:hover {
+            border: 0 !important;
+            background: transparent !important;
+            color: #334155 !important;
+            text-decoration: underline !important;
+        }
+        @media (max-width: 980px) {
+            .ai-workspace-shell {
+                border-radius: 14px;
+                padding: 0.7rem;
+            }
+            .ai-workspace-title {
+                font-size: 1.02rem;
+            }
+            .ai-workspace-sub {
+                font-size: 0.78rem;
+            }
+            .st-key-ai_workspace_insert_wrap [data-testid="stHorizontalBlock"],
+            .st-key-ai_workspace_input_wrap [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.34rem !important;
+            }
+            .st-key-ai_workspace_insert_wrap [data-testid="column"],
+            .st-key-ai_workspace_input_wrap [data-testid="column"] {
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+                width: 100% !important;
+            }
+            .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploader"] {
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            .st-key-ai_workspace_prefix_wrap [data-testid="stFileUploaderDropzone"] {
+                width: 100% !important;
+                min-width: 100% !important;
+                border-radius: 12px !important;
+            }
+            .st-key-ai_workspace_send_btn button {
+                min-height: 2.1rem !important;
+            }
+            .aiws-msg {
+                max-width: 100%;
             }
         }
         </style>
@@ -539,22 +666,35 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
     if not bool(st.session_state.get("ai_workspace_unlock_ok")):
         st.info("Unlock AI Workspace with your promo code. This access can be redeemed once per account.")
         with st.container(key="ai_workspace_unlock_shell"):
-            _, center_col, _ = st.columns([1.2, 2.6, 1.2], gap="small")
-            with center_col:
-                unlock_cols = st.columns([4.0, 1.15], gap="small")
-                with unlock_cols[0]:
-                    promo_code_text = st.text_input(
-                        "Promo code",
-                        key="ai_workspace_unlock_code",
-                        placeholder="Enter promo code",
-                        label_visibility="collapsed",
-                    )
-                with unlock_cols[1]:
-                    unlock_clicked = st.button(
-                        "Unlock",
-                        key="ai_workspace_unlock_apply_btn",
-                        use_container_width=True,
-                    )
+            if is_mobile:
+                promo_code_text = st.text_input(
+                    "Promo code",
+                    key="ai_workspace_unlock_code",
+                    placeholder="Enter promo code",
+                    label_visibility="collapsed",
+                )
+                unlock_clicked = st.button(
+                    "Unlock",
+                    key="ai_workspace_unlock_apply_btn",
+                    use_container_width=True,
+                )
+            else:
+                _, center_col, _ = st.columns([1.2, 2.6, 1.2], gap="small")
+                with center_col:
+                    unlock_cols = st.columns([4.0, 1.15], gap="small")
+                    with unlock_cols[0]:
+                        promo_code_text = st.text_input(
+                            "Promo code",
+                            key="ai_workspace_unlock_code",
+                            placeholder="Enter promo code",
+                            label_visibility="collapsed",
+                        )
+                    with unlock_cols[1]:
+                        unlock_clicked = st.button(
+                            "Unlock",
+                            key="ai_workspace_unlock_apply_btn",
+                            use_container_width=True,
+                        )
         if unlock_clicked:
             ok_unlock, unlock_message = redeem_promo_code(promo_code_text, email)
             st.session_state.ai_workspace_unlock_ok = bool(ok_unlock)
@@ -599,21 +739,38 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     st.session_state.ai_workspace_pending_prompt = None
                     st.session_state.ai_workspace_clear_input = True
                     st.session_state.ai_workspace_attachments = []
+                    st.session_state.ai_workspace_media_bytes = b""
+                    st.session_state.ai_workspace_media_mime = ""
+                    st.session_state.ai_workspace_media_file_name = ""
+                    st.session_state.ai_workspace_media_label = ""
                     st.session_state.ai_workspace_upload_nonce = int(st.session_state.get("ai_workspace_upload_nonce", 0) or 0) + 1
                     st.rerun()
-            with st.container(height=560):
+            with st.container(height=chat_panel_height):
                 chat_history_container = st.container()
                 live_reply_container = st.container()
                 with chat_history_container:
                     for msg in st.session_state.get("ai_workspace_messages", []):
-                        st.markdown(
-                            format_ai_workspace_message_html(
-                                str(msg.get("role", "assistant")),
-                                str(msg.get("content", "")),
-                                user_name_label,
-                            ),
-                            unsafe_allow_html=True,
-                        )
+                        if not isinstance(msg, dict):
+                            continue
+                        message_type = str(msg.get("message_type", "")).strip().lower()
+                        if message_type == "assistant_image":
+                            st.markdown(
+                                format_ai_workspace_image_message_html(
+                                    str(msg.get("content", "")),
+                                    str(msg.get("image_data_uri", "")),
+                                    str(msg.get("image_alt", "AI image")),
+                                ),
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                format_ai_workspace_message_html(
+                                    str(msg.get("role", "assistant")),
+                                    str(msg.get("content", "")),
+                                    user_name_label,
+                                ),
+                                unsafe_allow_html=True,
+                            )
                 st.markdown('<div id="zoswi-scroll-anchor"></div>', unsafe_allow_html=True)
                 render_zoswi_autoscroll()
 
@@ -627,8 +784,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         if "ai_workspace_insert_topic" not in st.session_state:
             st.session_state.ai_workspace_insert_topic = next(iter(prompt_templates))
         with st.container(key="ai_workspace_insert_wrap"):
-            insert_cols = st.columns([2.25, 0.86, 0.98, 5.91], gap="small")
-            with insert_cols[0]:
+            if is_mobile:
                 selected_topic = st.selectbox(
                     "Insert prompt topic",
                     options=list(prompt_templates.keys()),
@@ -636,21 +792,47 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     label_visibility="collapsed",
                     disabled=waiting_for_reply,
                 )
-            with insert_cols[1]:
-                insert_clicked = st.button(
-                    "+ Insert",
-                    key="ai_workspace_insert_btn",
-                    use_container_width=True,
-                    disabled=waiting_for_reply,
-                )
-            with insert_cols[2]:
-                insert_send_clicked = st.button(
-                    "Ask Now \u2192",
-                    key="ai_workspace_insert_send_btn",
-                    use_container_width=True,
-                    disabled=waiting_for_reply,
-                )
+                insert_action_cols = st.columns(2, gap="small")
+                with insert_action_cols[0]:
+                    insert_clicked = st.button(
+                        "+ Insert",
+                        key="ai_workspace_insert_btn",
+                        use_container_width=True,
+                        disabled=waiting_for_reply,
+                    )
+                with insert_action_cols[1]:
+                    insert_send_clicked = st.button(
+                        "Ask Now \u2192",
+                        key="ai_workspace_insert_send_btn",
+                        use_container_width=True,
+                        disabled=waiting_for_reply,
+                    )
+            else:
+                insert_cols = st.columns([2.25, 0.86, 0.98, 5.91], gap="small")
+                with insert_cols[0]:
+                    selected_topic = st.selectbox(
+                        "Insert prompt topic",
+                        options=list(prompt_templates.keys()),
+                        key="ai_workspace_insert_topic",
+                        label_visibility="collapsed",
+                        disabled=waiting_for_reply,
+                    )
+                with insert_cols[1]:
+                    insert_clicked = st.button(
+                        "+ Insert",
+                        key="ai_workspace_insert_btn",
+                        use_container_width=True,
+                        disabled=waiting_for_reply,
+                    )
+                with insert_cols[2]:
+                    insert_send_clicked = st.button(
+                        "Ask Now \u2192",
+                        key="ai_workspace_insert_send_btn",
+                        use_container_width=True,
+                        disabled=waiting_for_reply,
+                    )
         st.caption("Use Insert to prefill, or Ask Now to send immediately.")
+        attachment_hint_placeholder = st.empty()
         selected_prompt = str(prompt_templates.get(selected_topic, "")).strip()
         if insert_clicked:
             st.session_state.ai_workspace_input = selected_prompt
@@ -667,14 +849,11 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
 
         upload_nonce = int(st.session_state.get("ai_workspace_upload_nonce", 0) or 0)
         upload_widget_key = f"ai_workspace_input_file_upload_{upload_nonce}"
+        attached_name_preview = ""
         with st.container(key="ai_workspace_input_wrap"):
-            row_cols = st.columns([0.54, 8.72, 0.74], gap="small")
+            row_cols = st.columns([0.9, 7.6, 1.5], gap="small") if is_mobile else st.columns([0.54, 8.72, 0.74], gap="small")
             with row_cols[0]:
                 with st.container(key="ai_workspace_prefix_wrap"):
-                    st.markdown(
-                        '<div class="aiws-prefix-visual"><span class="aiws-prefix-plus">+</span><span class="aiws-prefix-brand">ZoSwi</span></div>',
-                        unsafe_allow_html=True,
-                    )
                     attached_file = st.file_uploader(
                         "Attach file",
                         key=upload_widget_key,
@@ -682,6 +861,10 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                         label_visibility="collapsed",
                         disabled=waiting_for_reply,
                     )
+                    if attached_file is not None:
+                        attached_name_preview = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
+                        if len(attached_name_preview) > 64:
+                            attached_name_preview = f"{attached_name_preview[:61]}..."
             with row_cols[1]:
                 message = st.text_input(
                     "Message AI Workspace",
@@ -699,6 +882,36 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     help="Send",
                     disabled=waiting_for_reply,
                 )
+
+        clear_attachment_clicked = False
+        if attached_file is not None:
+            with attachment_hint_placeholder.container(key="ai_workspace_attachment_hint_wrap"):
+                attach_cols = st.columns([1.0, 0.08], gap="small")
+                with attach_cols[0]:
+                    st.markdown(
+                        f'<div class="aiws-attach-hint">Attached: {html.escape(attached_name_preview)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with attach_cols[1]:
+                    clear_attachment_clicked = st.button(
+                        "x",
+                        key=f"ai_workspace_attachment_remove_btn_{upload_nonce}",
+                        help="Remove attachment",
+                        disabled=waiting_for_reply,
+                        use_container_width=False,
+                    )
+        else:
+            attachment_hint_placeholder.empty()
+
+        if clear_attachment_clicked:
+            st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+            st.session_state.ai_workspace_submit = False
+            st.session_state.ai_workspace_media_bytes = b""
+            st.session_state.ai_workspace_media_mime = ""
+            st.session_state.ai_workspace_media_file_name = ""
+            st.session_state.ai_workspace_media_label = ""
+            st.rerun()
+
         st.markdown('<div class="aiws-input-note">ZoSwi can make mistakes. Please verify important responses.</div>', unsafe_allow_html=True)
         submit_requested = bool(send) or bool(st.session_state.get("ai_workspace_submit"))
         if submit_requested:
@@ -706,6 +919,165 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
 
         if submit_requested and not waiting_for_reply:
             clean_message = str(message or "").strip()
+            has_attachment = attached_file is not None
+            uploaded_name = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
+            attachment_is_image = bool(has_attachment and is_supported_image_file_name(uploaded_name))
+            workspace_progress_text = "ZoSwi is working..."
+
+            ai_messages = st.session_state.get("ai_workspace_messages", [])
+            if not isinstance(ai_messages, list):
+                ai_messages = []
+
+            if is_ai_workspace_18plus_request(clean_message):
+                user_echo = clean_message or (f"Attached file: {uploaded_name}" if has_attachment else "")
+                if user_echo:
+                    ai_messages.append({"role": "user", "content": user_echo})
+                ai_messages.append({"role": "assistant", "content": AI_WORKSPACE_ADULT_BLOCK_MESSAGE})
+                st.session_state.ai_workspace_messages = ai_messages
+                st.session_state.ai_workspace_clear_input = True
+                if has_attachment:
+                    st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                st.rerun()
+
+            if attachment_is_image:
+                if is_ai_workspace_image_conversion_request(clean_message):
+                    target_format = infer_image_convert_target_format(clean_message)
+                    ok_img, out_bytes, out_mime, out_ext_or_msg = convert_image_bytes_to_format(
+                        attached_file.getvalue(),
+                        target_format,
+                        92,
+                    )
+                    user_line = f"{clean_message}\n\nAttached image: {uploaded_name}".strip()
+                    ai_messages.append({"role": "user", "content": user_line})
+                    if ok_img:
+                        base_name = os.path.splitext(uploaded_name)[0] or "image"
+                        out_name = f"{base_name}_converted.{out_ext_or_msg}"
+                        data_uri = build_image_data_uri(out_bytes, out_mime)
+                        ai_messages.append(
+                            {
+                                "role": "assistant",
+                                "message_type": "assistant_image",
+                                "content": (
+                                    f"Conversion complete: `{uploaded_name}` -> `{target_format}`.\n"
+                                    "Professional context: format optimized for clean sharing and presentation use."
+                                ),
+                                "image_data_uri": data_uri,
+                                "image_alt": out_name,
+                            }
+                        )
+                    else:
+                        ai_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": str(out_ext_or_msg or "Could not convert the image."),
+                            }
+                        )
+                    st.session_state.ai_workspace_messages = ai_messages
+                    st.session_state.ai_workspace_clear_input = True
+                    st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                    st.rerun()
+
+                if is_ai_workspace_image_creation_command(clean_message):
+                    requested_size = infer_image_generation_size(clean_message)
+                    requested_style = infer_image_generation_style(clean_message)
+                    user_line = f"{clean_message}\n\nAttached image: {uploaded_name}".strip()
+                    ai_messages.append({"role": "user", "content": user_line})
+                    with st.spinner(workspace_progress_text):
+                        ok_gen, generated_bytes, gen_error = generate_image_with_openai(
+                            clean_message,
+                            requested_size,
+                            requested_style,
+                        )
+                    if ok_gen:
+                        data_uri = build_image_data_uri(generated_bytes, "image/png")
+                        ai_messages.append(
+                            {
+                                "role": "assistant",
+                                "message_type": "assistant_image",
+                                "content": (
+                                    f"Image generated ({requested_style}, {requested_size}).\n"
+                                    "Professional context: visual designed for product, portfolio, and communication use."
+                                ),
+                                "image_data_uri": data_uri,
+                                "image_alt": "AI generated image",
+                            }
+                        )
+                    else:
+                        ai_messages.append({"role": "assistant", "content": str(gen_error or "Image generation failed.")})
+                    st.session_state.ai_workspace_messages = ai_messages
+                    st.session_state.ai_workspace_clear_input = True
+                    st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                    st.rerun()
+
+                user_line = clean_message or f"Attached image: {uploaded_name}"
+                ai_messages.append({"role": "user", "content": user_line})
+                with st.spinner(workspace_progress_text):
+                    ok_analysis, image_response = analyze_uploaded_image_with_ai(
+                        attached_file.getvalue(),
+                        uploaded_name,
+                        clean_message,
+                    )
+                if ok_analysis:
+                    ai_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                f"{str(image_response).strip()}\n\n"
+                                "Professional context: response prepared from your uploaded image."
+                            ),
+                        }
+                    )
+                else:
+                    ai_messages.append({"role": "assistant", "content": str(image_response or "Could not process this image.")})
+                st.session_state.ai_workspace_messages = ai_messages
+                st.session_state.ai_workspace_clear_input = True
+                st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                st.rerun()
+
+            if is_ai_workspace_image_conversion_request(clean_message):
+                ai_messages.append({"role": "user", "content": clean_message})
+                ai_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "To convert an image, attach a PNG/JPG/WEBP file and ask again (example: `convert this to PNG`).",
+                    }
+                )
+                st.session_state.ai_workspace_messages = ai_messages
+                st.session_state.ai_workspace_clear_input = True
+                st.rerun()
+
+            if is_ai_workspace_image_generation_request(clean_message):
+                requested_size = infer_image_generation_size(clean_message)
+                requested_style = infer_image_generation_style(clean_message)
+                ai_messages.append({"role": "user", "content": clean_message})
+                with st.spinner(workspace_progress_text):
+                    ok_gen, generated_bytes, gen_error = generate_image_with_openai(
+                        clean_message,
+                        requested_size,
+                        requested_style,
+                    )
+                if ok_gen:
+                    data_uri = build_image_data_uri(generated_bytes, "image/png")
+                    ai_messages.append(
+                        {
+                            "role": "assistant",
+                            "message_type": "assistant_image",
+                            "content": (
+                                f"Image generated ({requested_style}, {requested_size}).\n"
+                                "Professional context: visual designed for product, portfolio, and communication use."
+                            ),
+                            "image_data_uri": data_uri,
+                            "image_alt": "AI generated image",
+                        }
+                    )
+                else:
+                    ai_messages.append({"role": "assistant", "content": str(gen_error or "Image generation failed.")})
+                st.session_state.ai_workspace_messages = ai_messages
+                st.session_state.ai_workspace_clear_input = True
+                if has_attachment:
+                    st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                st.rerun()
+
             final_message = clean_message
             display_message = clean_message
             if attached_file is not None:
@@ -715,23 +1087,23 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     final_message = ""
                     display_message = ""
                 else:
-                    uploaded_name = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
                     add_ai_workspace_attachment(uploaded_name, file_text)
                     if clean_message:
                         final_message = clean_message
                     else:
-                        final_message = f"I attached file {uploaded_name}. Keep it as context for follow-up questions."
+                        final_message = (
+                            f"I uploaded file {uploaded_name}. "
+                            "Summarize key points, extract practical insights, and suggest next actions."
+                        )
                     attach_line = f"Attached file: {uploaded_name}"
                     display_message = f"{clean_message}\n\n{attach_line}".strip() if clean_message else attach_line
             if final_message.strip():
-                ai_messages = st.session_state.get("ai_workspace_messages", [])
-                if not isinstance(ai_messages, list):
-                    ai_messages = []
                 ai_messages.append({"role": "user", "content": display_message.strip()})
                 st.session_state.ai_workspace_messages = ai_messages
                 st.session_state.ai_workspace_pending_prompt = final_message
                 st.session_state.ai_workspace_clear_input = True
-                st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
+                if has_attachment:
+                    st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
                 st.rerun()
 
         if pending_prompt:

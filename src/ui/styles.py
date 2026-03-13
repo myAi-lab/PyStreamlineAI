@@ -157,8 +157,8 @@ def render_app_styles() -> None:
             100% { background-position: 100% 50%; }
         }
         .st-key-login_forgot_row {
-            margin-top: 0.12rem;
-            margin-bottom: 0.05rem;
+            margin-top: 0.08rem;
+            margin-bottom: 0.16rem;
         }
         .st-key-login_form_center [data-testid="stTextInputRootElement"] input {
             min-height: 2rem !important;
@@ -215,41 +215,41 @@ def render_app_styles() -> None:
             text-underline-offset: 2px;
         }
         .st-key-login_forgot_row [data-testid="stHorizontalBlock"] {
-            align-items: baseline;
+            align-items: flex-start;
         }
         .st-key-login_forgot_reset_btn .stButton {
             display: flex;
-            justify-content: flex-end;
-            margin-top: 0.08rem;
+            justify-content: flex-start;
+            margin-top: 0.02rem;
         }
         .st-key-login_forgot_reset_btn .stButton > button,
         .st-key-login_forgot_reset_btn button,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"] {
             border: 0 !important;
             background: transparent !important;
-            color: #64748b !important;
+            color: #475569 !important;
             min-height: auto !important;
             height: auto !important;
-            padding: 0 0.08rem !important;
-            font-size: 0.76rem !important;
-            line-height: 1.2 !important;
+            padding: 0 !important;
+            font-size: 0.66rem !important;
+            line-height: 1.15 !important;
             font-weight: 500 !important;
             text-decoration: none !important;
             border-radius: 0 !important;
-            justify-content: flex-end !important;
+            justify-content: flex-start !important;
             box-shadow: none !important;
             transition: color 130ms ease, transform 130ms ease !important;
         }
         .st-key-login_forgot_reset_btn .stButton > button:hover,
         .st-key-login_forgot_reset_btn button:hover,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"]:hover {
-            color: #334155 !important;
+            color: #1e293b !important;
             text-decoration: underline !important;
             text-underline-offset: 2px !important;
             background: transparent !important;
             border: 0 !important;
             box-shadow: none !important;
-            transform: translateY(1px) !important;
+            transform: none !important;
         }
         .st-key-login_submit_btn button,
         .st-key-login_submit_btn [data-testid="baseButton-primary"] {
@@ -272,6 +272,514 @@ def render_app_styles() -> None:
         .st-key-login_submit_btn button p,
         .st-key-login_submit_btn button span {
             margin: 0 !important;
+        }
+        .st-key-auth_privacy_center_link .stButton {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 0.02rem;
+            margin-bottom: 0;
+            padding-right: 0.06rem;
+            width: 100%;
+        }
+        .st-key-auth_privacy_center_link [data-testid="stElementContainer"] {
+            width: 100% !important;
+            display: flex !important;
+            justify-content: flex-end !important;
+        }
+        .st-key-auth_privacy_center_link .stButton > button,
+        .st-key-auth_privacy_center_link button,
+        .st-key-auth_privacy_center_link [data-testid^="baseButton"] {
+            border: 0 !important;
+            background: transparent !important;
+            color: #94a3b8 !important;
+            min-height: auto !important;
+            height: auto !important;
+            padding: 0.01rem 0.12rem !important;
+            font-size: 0.64rem !important;
+            font-weight: 500 !important;
+            letter-spacing: 0.01em !important;
+            text-decoration: none !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+            opacity: 0.92 !important;
+        }
+        .st-key-auth_privacy_center_link .stButton > button:hover,
+        .st-key-auth_privacy_center_link button:hover,
+        .st-key-auth_privacy_center_link [data-testid^="baseButton"]:hover {
+            color: #64748b !important;
+            text-decoration: underline !important;
+            text-underline-offset: 2px !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+        .st-key-auth_privacy_header_actions [data-testid="stHorizontalBlock"] {
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0.12rem !important;
+        }
+        .st-key-auth_privacy_header_close .stButton {
+            display: flex;
+            justify-content: center;
+            margin-top: 0.52rem;
+            margin-bottom: 0;
+            padding-right: 0;
+        }
+        .st-key-auth_privacy_header_support .stButton {
+            display: flex;
+            justify-content: center;
+            margin-top: 0.52rem;
+            margin-bottom: 0;
+            padding-right: 0;
+        }
+        .st-key-auth_privacy_header_close .stButton > button,
+        .st-key-auth_privacy_header_close button,
+        .st-key-auth_privacy_header_close [data-testid^="baseButton"],
+        .st-key-auth_privacy_header_support .stButton > button,
+        .st-key-auth_privacy_header_support button,
+        .st-key-auth_privacy_header_support [data-testid^="baseButton"] {
+            border: 1px solid #d7e2ee !important;
+            background: #ffffff !important;
+            min-height: 2.04rem !important;
+            height: 2.04rem !important;
+            width: 2.04rem !important;
+            padding: 0 !important;
+            border-radius: 8px !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+            line-height: 1 !important;
+            transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease !important;
+        }
+        .st-key-auth_privacy_header_close .stButton > button,
+        .st-key-auth_privacy_header_close button,
+        .st-key-auth_privacy_header_close [data-testid^="baseButton"] {
+            color: #64748b !important;
+            font-size: 1.1rem !important;
+            font-weight: 800 !important;
+        }
+        .st-key-auth_privacy_header_close .stButton > button:hover,
+        .st-key-auth_privacy_header_close button:hover,
+        .st-key-auth_privacy_header_close [data-testid^="baseButton"]:hover {
+            color: #0f172a !important;
+            border-color: #cbd5e1 !important;
+            background: #f8fafc !important;
+            transform: translateY(-1px) !important;
+        }
+        .st-key-auth_privacy_header_close .stButton > button:focus,
+        .st-key-auth_privacy_header_close button:focus,
+        .st-key-auth_privacy_header_close [data-testid^="baseButton"]:focus,
+        .st-key-auth_privacy_header_close .stButton > button:focus-visible,
+        .st-key-auth_privacy_header_close button:focus-visible,
+        .st-key-auth_privacy_header_close [data-testid^="baseButton"]:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .st-key-auth_privacy_header_support .stButton > button,
+        .st-key-auth_privacy_header_support button,
+        .st-key-auth_privacy_header_support [data-testid^="baseButton"] {
+            color: #0284c7 !important;
+            font-size: 1rem !important;
+            font-weight: 800 !important;
+            white-space: nowrap !important;
+        }
+        .st-key-auth_privacy_header_support .stButton > button:hover,
+        .st-key-auth_privacy_header_support button:hover,
+        .st-key-auth_privacy_header_support [data-testid^="baseButton"]:hover {
+            color: #0369a1 !important;
+            border-color: #7dd3fc !important;
+            background: #f0f9ff !important;
+            transform: translateY(-1px) !important;
+        }
+        .st-key-auth_privacy_header_support .stButton > button:focus,
+        .st-key-auth_privacy_header_support button:focus,
+        .st-key-auth_privacy_header_support [data-testid^="baseButton"]:focus,
+        .st-key-auth_privacy_header_support .stButton > button:focus-visible,
+        .st-key-auth_privacy_header_support button:focus-visible,
+        .st-key-auth_privacy_header_support [data-testid^="baseButton"]:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .st-key-auth_privacy_support_sheet {
+            position: fixed;
+            right: 0.9rem;
+            top: 5.2rem;
+            bottom: 0.9rem;
+            width: min(430px, calc(100vw - 1.4rem));
+            z-index: 9999;
+            animation: privacySupportSlideIn 260ms cubic-bezier(0.2, 0.9, 0.2, 1);
+        }
+        .st-key-auth_privacy_support_sheet > [data-testid="stVerticalBlock"] {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            border: 1px solid #cfe3f5;
+            border-radius: 16px;
+            box-shadow: 0 18px 38px rgba(15, 23, 42, 0.16);
+            padding: 0.68rem 0.78rem 0.74rem 0.78rem;
+            height: 100%;
+            max-height: none;
+            overflow-y: auto;
+        }
+        .auth-privacy-support-title {
+            color: #0f172a;
+            font-size: 0.98rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 0.1rem;
+        }
+        .auth-privacy-support-subtitle {
+            color: #475569;
+            font-size: 0.79rem;
+            line-height: 1.35;
+            margin-bottom: 0.2rem;
+        }
+        .st-key-auth_privacy_support_close_btn .stButton {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 0.02rem;
+            margin-bottom: 0;
+        }
+        .st-key-auth_privacy_support_close_btn .stButton > button,
+        .st-key-auth_privacy_support_close_btn button,
+        .st-key-auth_privacy_support_close_btn [data-testid^="baseButton"] {
+            border: 0 !important;
+            background: transparent !important;
+            color: #64748b !important;
+            min-height: auto !important;
+            height: auto !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            font-size: 1.08rem !important;
+            font-weight: 800 !important;
+            line-height: 1 !important;
+            transition: transform 180ms ease, color 180ms ease, text-shadow 180ms ease !important;
+            animation: supportCloseGlow 2.4s ease-in-out infinite;
+        }
+        .st-key-auth_privacy_support_close_btn .stButton > button:hover,
+        .st-key-auth_privacy_support_close_btn button:hover,
+        .st-key-auth_privacy_support_close_btn [data-testid^="baseButton"]:hover {
+            color: #0f172a !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            transform: rotate(90deg) scale(1.08) !important;
+            text-shadow: 0 0 10px rgba(14, 165, 233, 0.24);
+        }
+        .st-key-auth_privacy_support_close_btn .stButton > button:focus,
+        .st-key-auth_privacy_support_close_btn button:focus,
+        .st-key-auth_privacy_support_close_btn [data-testid^="baseButton"]:focus,
+        .st-key-auth_privacy_support_close_btn .stButton > button:focus-visible,
+        .st-key-auth_privacy_support_close_btn button:focus-visible,
+        .st-key-auth_privacy_support_close_btn [data-testid^="baseButton"]:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .auth-privacy-support-divider {
+            height: 1px;
+            margin: 0.28rem 0 0.34rem 0;
+            background: linear-gradient(90deg, rgba(2, 132, 199, 0.22), rgba(148, 163, 184, 0.05));
+        }
+        @keyframes supportCloseGlow {
+            0%, 100% { opacity: 0.82; transform: translateY(0px); }
+            50% { opacity: 1; transform: translateY(-1px); }
+        }
+        .st-key-auth_privacy_support_email_row [data-testid="stHorizontalBlock"],
+        .st-key-auth_privacy_support_otp_row [data-testid="stHorizontalBlock"] {
+            align-items: end;
+        }
+        .st-key-auth_privacy_support_send_code_btn .stButton,
+        .st-key-auth_privacy_support_verify_btn .stButton {
+            margin-top: 0;
+        }
+        .st-key-auth_privacy_support_send_code_btn .stButton > button,
+        .st-key-auth_privacy_support_send_code_btn button,
+        .st-key-auth_privacy_support_send_code_btn [data-testid^="baseButton"] {
+            border: 1px solid #bae6fd !important;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
+            color: #0369a1 !important;
+            border-radius: 8px !important;
+            font-size: 0.69rem !important;
+            font-weight: 700 !important;
+            min-height: 2rem !important;
+            padding: 0.1rem 0.48rem !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+            white-space: nowrap !important;
+            line-height: 1 !important;
+            letter-spacing: 0.005em !important;
+        }
+        .st-key-auth_privacy_support_send_code_btn .stButton > button:hover,
+        .st-key-auth_privacy_support_send_code_btn button:hover,
+        .st-key-auth_privacy_support_send_code_btn [data-testid^="baseButton"]:hover {
+            border-color: #7dd3fc !important;
+            background: #f0f9ff !important;
+            transform: translateY(-1px) !important;
+        }
+        .st-key-auth_privacy_support_verify_btn .stButton > button,
+        .st-key-auth_privacy_support_verify_btn button,
+        .st-key-auth_privacy_support_verify_btn [data-testid^="baseButton"] {
+            border: 1px solid #93c5fd !important;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
+            color: #1d4ed8 !important;
+            border-radius: 8px !important;
+            font-size: 0.69rem !important;
+            font-weight: 700 !important;
+            min-height: 2rem !important;
+            padding: 0.1rem 0.48rem !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+            white-space: nowrap !important;
+            line-height: 1 !important;
+            letter-spacing: 0.005em !important;
+        }
+        .st-key-auth_privacy_support_verify_btn .stButton > button:hover,
+        .st-key-auth_privacy_support_verify_btn button:hover,
+        .st-key-auth_privacy_support_verify_btn [data-testid^="baseButton"]:hover {
+            border-color: #60a5fa !important;
+            background: #eff6ff !important;
+            transform: translateY(-1px) !important;
+        }
+        .st-key-auth_privacy_support_send_msg_btn .stButton > button,
+        .st-key-auth_privacy_support_send_msg_btn button,
+        .st-key-auth_privacy_support_send_msg_btn [data-testid^="baseButton"] {
+            border: 1px solid #0ea5e9 !important;
+            background: linear-gradient(120deg, #0ea5e9 0%, #22d3ee 100%) !important;
+            color: #ffffff !important;
+            border-radius: 999px !important;
+            font-size: 0.76rem !important;
+            font-weight: 800 !important;
+            min-height: 1.86rem !important;
+            padding: 0.12rem 0.8rem !important;
+            box-shadow: none !important;
+        }
+        @keyframes privacySupportSlideIn {
+            from { opacity: 0; transform: translateX(22px); }
+            to { opacity: 1; transform: translateX(0px); }
+        }
+        .auth-privacy-page-wrap {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            padding: 0.32rem 0 1.2rem 0;
+        }
+        .auth-privacy-a4-sheet {
+            width: min(100%, 794px);
+            min-height: 1123px;
+            background: #ffffff;
+            border: 1px solid #dbe4ef;
+            border-radius: 18px;
+            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.12);
+            padding: 1.28rem 1.34rem 1.24rem 1.34rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .auth-privacy-a4-sheet::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 5px;
+            background: linear-gradient(90deg, #0284c7 0%, #06b6d4 48%, #22d3ee 100%);
+        }
+        .auth-privacy-sheet-header {
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 0.82rem;
+            margin-bottom: 0.9rem;
+        }
+        .auth-privacy-sheet-header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.6rem;
+        }
+        .auth-privacy-wordmark-wrap {
+            width: 164px;
+            height: 64px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+            flex: 0 0 auto;
+        }
+        .auth-privacy-page-logo {
+            height: 64px;
+            width: auto;
+            max-width: none;
+            margin-left: -56px;
+            display: block;
+        }
+        .auth-privacy-sheet-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.73rem;
+            font-weight: 700;
+            color: #0f172a;
+            background: linear-gradient(120deg, #e0f2fe 0%, #ecfeff 100%);
+            border: 1px solid #bae6fd;
+            border-radius: 999px;
+            padding: 0.16rem 0.62rem;
+            white-space: nowrap;
+        }
+        .auth-privacy-sheet-header h2 {
+            margin: 0;
+            color: #0f172a;
+            font-size: 1.56rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+        }
+        .auth-privacy-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.72rem;
+            width: 100%;
+            white-space: normal;
+        }
+        .auth-privacy-heading-text {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .auth-privacy-inline-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.26rem;
+            font-size: 0.66rem;
+            font-weight: 700;
+            line-height: 1;
+            color: #065f46;
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            border-radius: 999px;
+            padding: 0.22rem 0.52rem;
+            letter-spacing: 0.01em;
+            transform: translateY(1px);
+            margin-left: auto;
+            flex: 0 0 auto;
+        }
+        .auth-privacy-inline-badge-icon {
+            width: 0.78rem;
+            height: 0.78rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+        .auth-privacy-inline-badge-icon svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        .auth-privacy-sheet-meta {
+            margin: 0.32rem 0 0.42rem 0 !important;
+            color: #64748b !important;
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+        }
+        .auth-privacy-sheet-header p {
+            margin: 0.16rem 0 0 0;
+            color: #334155;
+            font-size: 0.92rem;
+            line-height: 1.55;
+        }
+        .auth-privacy-sheet-section {
+            margin-top: 0.86rem;
+        }
+        .auth-privacy-sheet-section h3 {
+            margin: 0 0 0.28rem 0;
+            color: #0f172a;
+            font-size: 1rem;
+            font-weight: 800;
+        }
+        .auth-privacy-sheet-section p {
+            margin: 0;
+            color: #334155;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+        .auth-privacy-sheet-section ul {
+            margin: 0.15rem 0 0 1.1rem;
+            padding: 0;
+        }
+        .auth-privacy-sheet-section li {
+            color: #334155;
+            font-size: 0.9rem;
+            line-height: 1.55;
+            margin: 0.16rem 0;
+        }
+        .auth-privacy-contact-highlight {
+            margin-top: 0.92rem;
+            padding-top: 0.58rem;
+            border-top: 1px solid #d1d5db;
+            display: flex;
+            justify-content: center;
+        }
+        .auth-privacy-contact-note {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.36rem;
+            color: #475569;
+            font-size: 0.78rem;
+            font-weight: 600;
+            line-height: 1.25;
+            background: #f1f5f9;
+            border: 1px solid #dbe5ee;
+            border-radius: 999px;
+            padding: 0.28rem 0.66rem;
+            text-align: center;
+        }
+        .auth-privacy-contact-note-icon {
+            width: 0.9rem;
+            height: 0.9rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            color: #0284c7;
+        }
+        .auth-privacy-contact-note-icon svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        @media (max-width: 900px) {
+            .st-key-auth_privacy_support_sheet {
+                width: min(97vw, 560px);
+                right: 0.45rem;
+                top: 4.9rem;
+                bottom: 0.55rem;
+            }
+            .auth-privacy-a4-sheet {
+                min-height: auto;
+                border-radius: 14px;
+                padding: 1rem 0.92rem;
+            }
+            .auth-privacy-sheet-header h2 {
+                font-size: 1.22rem;
+            }
+            .auth-privacy-heading {
+                gap: 0.42rem;
+            }
+            .auth-privacy-heading-text {
+                font-size: 1.22rem;
+            }
+            .auth-privacy-inline-badge {
+                font-size: 0.58rem;
+                padding: 0.18rem 0.42rem;
+            }
+            .auth-privacy-wordmark-wrap {
+                width: 148px;
+                height: 58px;
+            }
+            .auth-privacy-page-logo {
+                height: 58px;
+                margin-left: -50px;
+            }
+            .auth-privacy-contact-note {
+                font-size: 0.72rem;
+                padding: 0.24rem 0.54rem;
+            }
         }
         .st-key-password_reset_actions [data-testid="stHorizontalBlock"] {
             align-items: center;
@@ -1119,6 +1627,18 @@ def render_app_styles() -> None:
             white-space: pre-wrap;
             word-break: break-word;
         }
+        .st-key-zoswi_panel .zoswi-msg-text strong {
+            font-weight: 800;
+            color: #0b1220;
+        }
+        .st-key-zoswi_panel .zoswi-msg-text code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            background: rgba(148, 163, 184, 0.18);
+            border: 1px solid rgba(148, 163, 184, 0.32);
+            border-radius: 6px;
+            padding: 0.05rem 0.28rem;
+            font-size: 0.82em;
+        }
         .st-key-zoswi_panel .zoswi-msg.user .zoswi-msg-text {
             text-align: left;
         }
@@ -1284,6 +1804,55 @@ def render_app_styles() -> None:
         @keyframes ai-logout-glow {
             0%, 100% { filter: drop-shadow(0 0 4px rgba(190, 24, 93, 0.24)); }
             50% { filter: drop-shadow(0 0 10px rgba(225, 29, 72, 0.55)); }
+        }
+        @media (max-width: 980px) {
+            [data-testid="stSidebar"] {
+                width: min(86vw, 320px) !important;
+            }
+            .st-key-home_dashboard_input_cols [data-testid="stHorizontalBlock"],
+            .st-key-careers_profile_setup_cols [data-testid="stHorizontalBlock"],
+            .st-key-full_chat_shell [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.55rem !important;
+            }
+            .st-key-home_dashboard_input_cols [data-testid="column"],
+            .st-key-careers_profile_setup_cols [data-testid="column"],
+            .st-key-full_chat_shell [data-testid="column"] {
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+                width: 100% !important;
+            }
+            .st-key-full_chat_panel {
+                margin-top: 0.18rem;
+            }
+            .st-key-zoswi_widget {
+                right: 8px;
+                bottom: 8px;
+                width: min(97vw, 420px);
+            }
+            .st-key-zoswi_panel {
+                border-radius: 18px;
+                padding: 0.52rem 0.62rem;
+                margin-bottom: 8px;
+            }
+            .st-key-zoswi_fab::before {
+                width: 44px;
+                height: 44px;
+                right: 8px;
+                bottom: 7px;
+            }
+            .st-key-zoswi_fab::after {
+                right: 0;
+                bottom: 43px;
+            }
+            .st-key-zoswi_fab button {
+                width: 62px;
+                height: 62px;
+                font-size: 3.3rem !important;
+            }
+            .st-key-zoswi_fab button p {
+                font-size: 3.3rem !important;
+            }
         }
         </style>
         <script>

@@ -29,6 +29,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from openai import OpenAI
 from src.controller.app_controller import run_app_runtime
 from src.dto.auth_dto import PasswordResetInputDTO
 from src.dto.runtime_dto import AppRuntimeHandlersDTO, PageConfigDTO
@@ -74,6 +75,12 @@ AI_WORKSPACE_FILE_TYPES = [
     "md",
     "pdf",
     "docx",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "bmp",
+    "tiff",
     "py",
     "js",
     "ts",
@@ -96,6 +103,20 @@ AI_WORKSPACE_FILE_TYPES = [
     "log",
 ]
 AI_WORKSPACE_FILE_MAX_CHARS = 12000
+IMAGE_TOOL_UPLOAD_TYPES = ["png", "jpg", "jpeg", "webp", "bmp", "tiff"]
+IMAGE_TOOL_TARGET_FORMATS = ["PNG", "JPEG", "WEBP"]
+IMAGE_TOOL_GENERATE_SIZES = ["1024x1024", "1536x1024", "1024x1536"]
+IMAGE_TOOL_STYLE_NOTES = {
+    "Professional": "clean professional composition with natural lighting",
+    "Photorealistic": "highly detailed photorealistic render",
+    "Illustration": "modern digital illustration with clean edges",
+    "Minimal": "minimal style with clear negative space and balanced layout",
+}
+AI_WORKSPACE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+AI_WORKSPACE_ADULT_BLOCK_MESSAGE = (
+    "I can’t help with 18+ or explicit sexual content. "
+    "I can help with career, coding, interview prep, and professional tasks."
+)
 JOB_SEARCH_MAX_RESULTS_DEFAULT = 5
 JOB_SEARCH_MAX_RESULTS_LIMIT = 15
 JOB_SEARCH_FETCH_CACHE_TTL_SECONDS = 300
@@ -973,6 +994,110 @@ def send_email_otp_message(recipient_email: str, otp_code: str, ttl_minutes: int
         return False, "Unable to send verification email right now."
 
 
+def get_support_inbox_email() -> str:
+    explicit = get_config_value("SUPPORT_INBOX_EMAIL", "support", "inbox_email")
+    if explicit:
+        return str(explicit).strip().lower()
+    fallback = get_config_value("SUPPORT_EMAIL_TO", "support", "email_to")
+    if fallback:
+        return str(fallback).strip().lower()
+    smtp_cfg = get_smtp_settings()
+    return str(smtp_cfg.get("from_email", "") or "").strip().lower()
+
+
+def send_support_verification_code_message(
+    recipient_email: str,
+    otp_code: str,
+    ttl_minutes: int,
+) -> tuple[bool, str]:
+    smtp_cfg = get_smtp_settings()
+    if not smtp_cfg["host"] or not smtp_cfg["from_email"]:
+        return False, "Support verification sender is not configured."
+
+    message = EmailMessage()
+    message["Subject"] = "Your ZoSwi support verification code"
+    message["From"] = smtp_cfg["from_email"]
+    message["To"] = str(recipient_email or "").strip().lower()
+    message.set_content(
+        "\n".join(
+            [
+                "Use this one-time code to verify your ZoSwi support request:",
+                "",
+                str(otp_code or "").strip(),
+                "",
+                f"This code expires in {ttl_minutes} minutes.",
+                "If you did not request support, ignore this email.",
+            ]
+        )
+    )
+
+    try:
+        with smtplib.SMTP(str(smtp_cfg["host"]), int(smtp_cfg["port"]), timeout=20) as smtp:
+            if bool(smtp_cfg["use_tls"]):
+                smtp.starttls()
+            if smtp_cfg["username"] and smtp_cfg["password"]:
+                smtp.login(str(smtp_cfg["username"]), str(smtp_cfg["password"]))
+            smtp.send_message(message)
+        return True, "Verification code sent."
+    except Exception:
+        return False, "Unable to send support verification email right now."
+
+
+def send_support_contact_message(
+    first_name: str,
+    last_name: str,
+    sender_email: str,
+    subject: str,
+    body: str,
+) -> tuple[bool, str]:
+    smtp_cfg = get_smtp_settings()
+    if not smtp_cfg["host"] or not smtp_cfg["from_email"]:
+        return False, "Support email sender is not configured."
+    inbox_email = get_support_inbox_email()
+    if not inbox_email:
+        return False, "Support inbox email is not configured."
+
+    cleaned_subject = str(subject or "").strip()
+    cleaned_body = str(body or "").strip()
+    cleaned_email = str(sender_email or "").strip().lower()
+    sender_full_name = " ".join(
+        part for part in [str(first_name or "").strip(), str(last_name or "").strip()] if part
+    ).strip()
+    if not sender_full_name:
+        sender_full_name = "ZoSwi User"
+
+    message = EmailMessage()
+    message["Subject"] = f"ZoSwi Support: {cleaned_subject[:120]}"
+    message["From"] = smtp_cfg["from_email"]
+    message["To"] = inbox_email
+    message["Reply-To"] = cleaned_email
+    message.set_content(
+        "\n".join(
+            [
+                "ZoSwi Privacy Center support request",
+                "",
+                f"From: {sender_full_name}",
+                f"Email: {cleaned_email}",
+                f"Submitted (UTC): {datetime.now(timezone.utc).isoformat()}",
+                "",
+                "Message:",
+                cleaned_body,
+            ]
+        )
+    )
+
+    try:
+        with smtplib.SMTP(str(smtp_cfg["host"]), int(smtp_cfg["port"]), timeout=20) as smtp:
+            if bool(smtp_cfg["use_tls"]):
+                smtp.starttls()
+            if smtp_cfg["username"] and smtp_cfg["password"]:
+                smtp.login(str(smtp_cfg["username"]), str(smtp_cfg["password"]))
+            smtp.send_message(message)
+        return True, "Support request sent successfully."
+    except Exception:
+        return False, "Unable to send support request right now."
+
+
 def get_user_identity_by_email(email: str) -> dict[str, Any] | None:
     cleaned_email = str(email or "").strip().lower()
     if not cleaned_email:
@@ -1380,6 +1505,46 @@ def sync_password_reset_query_param(enabled: bool) -> None:
             del st.query_params["pwreset"]
     except Exception:
         pass
+
+
+def is_mobile_browser() -> bool:
+    cached = st.session_state.get("_ui_is_mobile")
+    if isinstance(cached, bool):
+        return cached
+
+    override_raw = ""
+    try:
+        override_raw = str(st.query_params.get("mobile", "") or "").strip().lower()
+    except Exception:
+        override_raw = ""
+    if override_raw in {"1", "true", "yes", "on"}:
+        st.session_state._ui_is_mobile = True
+        return True
+    if override_raw in {"0", "false", "no", "off"}:
+        st.session_state._ui_is_mobile = False
+        return False
+
+    user_agent = ""
+    try:
+        headers = getattr(st.context, "headers", {})
+        user_agent = str(headers.get("user-agent", "") or "").strip().lower()
+    except Exception:
+        user_agent = ""
+
+    mobile_markers = [
+        "android",
+        "iphone",
+        "ipad",
+        "ipod",
+        "mobile",
+        "blackberry",
+        "opera mini",
+        "iemobile",
+        "windows phone",
+    ]
+    is_mobile = any(marker in user_agent for marker in mobile_markers)
+    st.session_state._ui_is_mobile = bool(is_mobile)
+    return bool(is_mobile)
 
 
 def send_email_verification_otp(
@@ -2432,6 +2597,10 @@ def sync_user_from_oauth_session() -> None:
     st.session_state.clear_zoswi_input = True
     st.session_state.full_chat_submit = False
     st.session_state.clear_full_chat_input = True
+    st.session_state.ai_workspace_media_bytes = b""
+    st.session_state.ai_workspace_media_mime = ""
+    st.session_state.ai_workspace_media_file_name = ""
+    st.session_state.ai_workspace_media_label = ""
     st.session_state.dashboard_view = "home"
     st.session_state.user_menu_open = False
     st.session_state.auth_session_token = None
@@ -3877,6 +4046,339 @@ def extract_resume_text(uploaded_file) -> str:
     raise ValueError("Unsupported file type. Please upload a PDF or DOCX file.")
 
 
+def normalize_image_tool_size(raw_size: str) -> str:
+    cleaned = str(raw_size or "").strip()
+    if cleaned in IMAGE_TOOL_GENERATE_SIZES:
+        return cleaned
+    return IMAGE_TOOL_GENERATE_SIZES[0]
+
+
+def convert_image_bytes_to_format(
+    image_bytes: bytes,
+    target_format: str,
+    quality: int = 92,
+) -> tuple[bool, bytes, str, str]:
+    if not image_bytes:
+        return False, b"", "", "Upload an image first."
+
+    normalized_format = str(target_format or "").strip().upper()
+    if normalized_format not in IMAGE_TOOL_TARGET_FORMATS:
+        return False, b"", "", "Choose a valid output format."
+
+    try:
+        from PIL import Image
+    except Exception:
+        return (
+            False,
+            b"",
+            "",
+            "Image conversion requires Pillow. Install with: pip install pillow",
+        )
+
+    output_buffer = io.BytesIO()
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source_img:
+            if normalized_format == "JPEG" and source_img.mode not in {"RGB", "L"}:
+                source_img = source_img.convert("RGB")
+            save_kwargs: dict[str, Any] = {}
+            if normalized_format in {"JPEG", "WEBP"}:
+                bounded_quality = max(40, min(98, int(quality or 92)))
+                save_kwargs["quality"] = bounded_quality
+            if normalized_format == "JPEG":
+                save_kwargs["optimize"] = True
+            source_img.save(output_buffer, format=normalized_format, **save_kwargs)
+    except Exception:
+        return False, b"", "", "Could not convert this image. Try a different file."
+
+    mime_by_format = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+        "WEBP": "image/webp",
+    }
+    ext_by_format = {
+        "PNG": "png",
+        "JPEG": "jpg",
+        "WEBP": "webp",
+    }
+    return True, output_buffer.getvalue(), mime_by_format[normalized_format], ext_by_format[normalized_format]
+
+
+def generate_image_with_openai(
+    prompt: str,
+    size: str,
+    style_name: str,
+) -> tuple[bool, bytes, str]:
+    clean_prompt = str(prompt or "").strip()
+    if len(clean_prompt) < 8:
+        return False, b"", "Add a clearer prompt (at least 8 characters)."
+
+    key = get_openai_key()
+    if not key:
+        return False, b"", "OPENAI_API_KEY is required for image creation."
+
+    normalized_size = normalize_image_tool_size(size)
+    style_note = IMAGE_TOOL_STYLE_NOTES.get(str(style_name or "").strip(), IMAGE_TOOL_STYLE_NOTES["Professional"])
+    enriched_prompt = (
+        f"{clean_prompt}\n\n"
+        f"Style preference: {style_note}. "
+        "Do not include text overlays or watermarks unless explicitly requested."
+    )
+
+    try:
+        client = OpenAI(api_key=key)
+        result = client.images.generate(
+            model="gpt-image-1",
+            prompt=enriched_prompt,
+            size=normalized_size,
+            n=1,
+        )
+    except Exception as ex:
+        return False, b"", f"Image generation failed: {str(ex).strip()[:180]}"
+
+    if not getattr(result, "data", None):
+        return False, b"", "No image was returned by the model."
+    first_item = result.data[0]
+    b64_payload = str(getattr(first_item, "b64_json", "") or "").strip()
+    if b64_payload:
+        try:
+            return True, base64.b64decode(b64_payload), ""
+        except Exception:
+            return False, b"", "Model returned unreadable image content."
+
+    remote_url = str(getattr(first_item, "url", "") or "").strip()
+    if not remote_url:
+        return False, b"", "Image payload was empty."
+    try:
+        request = Request(remote_url, headers={"User-Agent": "ZoSwi/1.0"})
+        with urlopen(request, timeout=25) as response:
+            payload = response.read()
+        if not payload:
+            return False, b"", "Downloaded image was empty."
+        return True, payload, ""
+    except Exception:
+        return False, b"", "Could not download generated image."
+
+
+def is_supported_image_file_name(file_name: str) -> bool:
+    ext = os.path.splitext(str(file_name or "").strip().lower())[1]
+    return ext in AI_WORKSPACE_IMAGE_EXTENSIONS
+
+
+def infer_image_mime_type_from_file_name(file_name: str) -> str:
+    ext = os.path.splitext(str(file_name or "").strip().lower())[1]
+    mime_by_ext = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+    }
+    return mime_by_ext.get(ext, "image/png")
+
+
+def is_ai_workspace_18plus_request(text: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not lowered:
+        return False
+    explicit_markers = [
+        "porn",
+        "porno",
+        "xxx",
+        "nsfw",
+        "nude",
+        "naked",
+        "sex video",
+        "sexual content",
+        "explicit sex",
+        "erotic",
+        "onlyfans",
+        "fetish",
+        "adult content",
+        "18+",
+    ]
+    return any(marker in lowered for marker in explicit_markers)
+
+
+def is_ai_workspace_image_generation_request(text: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not lowered:
+        return False
+    if is_ai_workspace_image_conversion_request(lowered):
+        return False
+    action_terms = [
+        "generate",
+        "create",
+        "make",
+        "draw",
+        "design",
+        "build",
+        "share",
+        "show",
+        "send",
+        "provide",
+        "give",
+    ]
+    object_terms = ["image", "picture", "photo", "visual", "illustration", "logo", "banner", "poster"]
+    has_action = any(term in lowered for term in action_terms)
+    has_object = any(term in lowered for term in object_terms)
+    request_phrases = [
+        "can you",
+        "could you",
+        "please",
+        "show me",
+        "share me",
+        "send me",
+        "give me",
+        "i need",
+        "i want",
+    ]
+    has_request_phrase = any(phrase in lowered for phrase in request_phrases)
+    command_prefixes = ["/image", "image:", "img:"]
+    has_command_prefix = any(lowered.startswith(prefix) for prefix in command_prefixes)
+    return bool(has_object and (has_action or has_request_phrase or has_command_prefix))
+
+
+def is_ai_workspace_image_creation_command(text: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not lowered:
+        return False
+    action_terms = ["generate", "create", "make", "draw", "design", "build"]
+    object_terms = ["image", "picture", "photo", "visual", "illustration", "logo", "banner", "poster"]
+    return bool(any(term in lowered for term in action_terms) and any(term in lowered for term in object_terms))
+
+
+def is_ai_workspace_image_conversion_request(text: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not lowered:
+        return False
+    convert_terms = [
+        "convert",
+        "change format",
+        "export as",
+        "save as",
+        "to png",
+        "to jpg",
+        "to jpeg",
+        "to webp",
+        "as png",
+        "as jpg",
+        "as jpeg",
+        "as webp",
+    ]
+    return any(term in lowered for term in convert_terms)
+
+
+def infer_image_convert_target_format(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if "webp" in lowered:
+        return "WEBP"
+    if "jpg" in lowered or "jpeg" in lowered:
+        return "JPEG"
+    return "PNG"
+
+
+def infer_image_generation_size(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if "1536x1024" in lowered or "landscape" in lowered or "wide" in lowered:
+        return "1536x1024"
+    if "1024x1536" in lowered or "portrait" in lowered or "vertical" in lowered:
+        return "1024x1536"
+    return "1024x1024"
+
+
+def infer_image_generation_style(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if "photo" in lowered or "realistic" in lowered:
+        return "Photorealistic"
+    if "illustration" in lowered or "cartoon" in lowered or "vector" in lowered:
+        return "Illustration"
+    if "minimal" in lowered or "clean" in lowered:
+        return "Minimal"
+    return "Professional"
+
+
+def analyze_uploaded_image_with_ai(
+    image_bytes: bytes,
+    file_name: str,
+    user_prompt: str,
+) -> tuple[bool, str]:
+    if not image_bytes:
+        return False, "Uploaded image is empty."
+    key = get_openai_key()
+    if not key:
+        return False, "OPENAI_API_KEY is required for image understanding."
+
+    prompt_text = str(user_prompt or "").strip()
+    if not prompt_text:
+        prompt_text = (
+            "Summarize this image in a professional way. "
+            "Highlight key visible details and practical next steps."
+        )
+
+    if is_ai_workspace_18plus_request(prompt_text):
+        return False, AI_WORKSPACE_ADULT_BLOCK_MESSAGE
+
+    mime_type = infer_image_mime_type_from_file_name(file_name)
+    image_data_uri = build_image_data_uri(image_bytes, mime_type)
+    if not image_data_uri:
+        return False, "Could not read image data."
+
+    system_text = (
+        "You are ZoSwi AI Workspace. Provide direct, professional, actionable responses. "
+        "If request or image is explicit sexual / 18+ content, refuse briefly and redirect to safe support."
+    )
+
+    try:
+        client = OpenAI(api_key=key)
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_text}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt_text},
+                        {"type": "input_image", "image_url": image_data_uri},
+                    ],
+                },
+            ],
+            max_output_tokens=320,
+        )
+        output_text = str(getattr(response, "output_text", "") or "").strip()
+        if output_text:
+            return True, output_text
+    except Exception:
+        pass
+
+    try:
+        client = OpenAI(api_key=key)
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_text},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": image_data_uri}},
+                    ],
+                },
+            ],
+            max_tokens=320,
+        )
+        message_content = completion.choices[0].message.content if completion and completion.choices else ""
+        if isinstance(message_content, str) and message_content.strip():
+            return True, message_content.strip()
+    except Exception:
+        pass
+
+    return False, "I could not analyze that image right now. Please try again."
+
+
 def extract_ai_workspace_file_text(uploaded_file, max_chars: int = AI_WORKSPACE_FILE_MAX_CHARS) -> tuple[bool, str, str]:
     if uploaded_file is None:
         return False, "", "Select a file first."
@@ -4812,6 +5314,10 @@ def sync_bot_for_logged_in_user() -> None:
         st.session_state.ai_workspace_input = ""
         st.session_state.ai_workspace_upload_nonce = 0
         st.session_state.ai_workspace_attachments = []
+        st.session_state.ai_workspace_media_bytes = b""
+        st.session_state.ai_workspace_media_mime = ""
+        st.session_state.ai_workspace_media_file_name = ""
+        st.session_state.ai_workspace_media_label = ""
         st.session_state.ai_workspace_unlock_code = ""
         st.session_state.job_search_results = []
         st.session_state.job_search_last_error = ""
@@ -5152,6 +5658,9 @@ Response rules:
 - Prefer practical answers with concrete steps.
 - Do not fabricate facts. If uncertain, say so briefly.
 - Keep answers concise unless the user asks for depth.
+- If the user has a real-time issue, provide immediate triage steps first, then deeper fixes.
+- Do not provide or create explicit sexual / 18+ content. Refuse briefly and redirect to safe help.
+- Support both research-style Q&A and coding-copilot style help in one thread.
 
 Context:
 - User: {full_name}
@@ -5168,6 +5677,10 @@ User message:
 
 
 def ask_ai_workspace_stream(message: str):
+    if is_ai_workspace_18plus_request(message):
+        yield AI_WORKSPACE_ADULT_BLOCK_MESSAGE
+        return
+
     key = get_openai_key()
     if not key:
         yield "OPENAI_API_KEY is required for AI Workspace responses. Please set it and retry."
@@ -6389,7 +6902,7 @@ def render_zoswi_outside_minimize_listener(is_open: bool) -> None:
 
 
 def format_zoswi_message_html(role: str, content: str, user_name: str) -> str:
-    safe_content = html.escape(str(content)).replace("\n", "<br>")
+    safe_content = format_chat_message_html(str(content))
     safe_user = html.escape((user_name or "You").strip()) or "You"
     if role == "assistant":
         return (
@@ -6406,8 +6919,22 @@ def format_zoswi_message_html(role: str, content: str, user_name: str) -> str:
     )
 
 
+def format_chat_message_html(content: str) -> str:
+    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    safe_content = html.escape(normalized)
+
+    # Render inline code safely inside the custom message bubble.
+    safe_content = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", safe_content)
+    # Render markdown-style bold markers used by model responses.
+    safe_content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe_content)
+    safe_content = re.sub(r"__(.+?)__", r"<strong>\1</strong>", safe_content)
+    # Render markdown list markers as visual bullets.
+    safe_content = re.sub(r"(?m)^\s*[-*]\s+", "• ", safe_content)
+    return safe_content.replace("\n", "<br>")
+
+
 def format_ai_workspace_message_html(role: str, content: str, user_name: str) -> str:
-    safe_content = html.escape(str(content)).replace("\n", "<br>")
+    safe_content = format_chat_message_html(str(content))
     safe_user = html.escape((user_name or "Candidate").strip()) or "Candidate"
     normalized_role = str(role or "").strip().lower()
     if normalized_role == "assistant":
@@ -6428,6 +6955,41 @@ def format_ai_workspace_message_html(role: str, content: str, user_name: str) ->
         f'<span class="aiws-name user">{safe_user[:24]}</span>'
         "</div>"
         f'<div class="aiws-msg-text">{safe_content}</div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def build_image_data_uri(image_bytes: bytes, mime_type: str = "image/png") -> str:
+    if not image_bytes:
+        return ""
+    clean_mime = str(mime_type or "image/png").strip().lower()
+    if not clean_mime.startswith("image/"):
+        clean_mime = "image/png"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{clean_mime};base64,{encoded}"
+
+
+def format_ai_workspace_image_message_html(
+    caption_text: str,
+    image_data_uri: str,
+    image_alt: str = "AI generated image",
+) -> str:
+    safe_caption = html.escape(str(caption_text or "").strip())
+    safe_alt = html.escape(str(image_alt or "AI generated image").strip())
+    safe_src = html.escape(str(image_data_uri or "").strip(), quote=True)
+    if not safe_src:
+        return format_ai_workspace_message_html("assistant", safe_caption or "Image response unavailable.", "Candidate")
+    return (
+        '<div class="aiws-row assistant">'
+        '<div class="aiws-msg assistant aiws-msg-image">'
+        '<div class="aiws-msg-head assistant">'
+        '<span class="aiws-name assistant">ZoSwi</span>'
+        "</div>"
+        f'<div class="aiws-msg-text">{safe_caption}</div>'
+        '<div class="aiws-msg-image-wrap">'
+        f'<img src="{safe_src}" alt="{safe_alt}" loading="lazy" />'
+        "</div>"
         "</div>"
         "</div>"
     )
@@ -6608,6 +7170,10 @@ def init_state() -> None:
         "ai_workspace_pending_prompt": None,
         "ai_workspace_upload_nonce": 0,
         "ai_workspace_attachments": [],
+        "ai_workspace_media_bytes": b"",
+        "ai_workspace_media_mime": "",
+        "ai_workspace_media_file_name": "",
+        "ai_workspace_media_label": "",
         "ai_workspace_unlock_code": "",
         "ai_workspace_unlock_status": "",
         "ai_workspace_unlock_ok": False,
@@ -6619,6 +7185,27 @@ def init_state() -> None:
         "auth_promo_valid": False,
         "auth_promo_status": "",
         "auth_promo_checked_code": "",
+        "auth_privacy_center_open": False,
+        "auth_privacy_support_open": False,
+        "auth_privacy_support_first_name": "",
+        "auth_privacy_support_last_name": "",
+        "auth_privacy_support_email": "",
+        "auth_privacy_support_code_sent": False,
+        "auth_privacy_support_code_email": "",
+        "auth_privacy_support_code_hash": "",
+        "auth_privacy_support_code_expires_at": 0.0,
+        "auth_privacy_support_code_resend_after": 0.0,
+        "auth_privacy_support_code_attempts": 0,
+        "auth_privacy_support_verified": False,
+        "auth_privacy_support_verified_email": "",
+        "auth_privacy_support_otp_input": "",
+        "auth_privacy_support_clear_otp_input": False,
+        "auth_privacy_support_clear_identity": False,
+        "auth_privacy_support_subject": "",
+        "auth_privacy_support_message": "",
+        "auth_privacy_support_clear_compose": False,
+        "auth_privacy_support_status": "",
+        "auth_privacy_support_error": "",
         "signup_success_message": "",
         "signup_warning_message": "",
         "signup_form_reset_pending": False,
@@ -7276,10 +7863,458 @@ def render_auth_motivation_quote_box(role_context: str = "login") -> None:
     )
 
 
+def reset_auth_privacy_support_state(clear_identity: bool = False) -> None:
+    st.session_state.auth_privacy_support_code_sent = False
+    st.session_state.auth_privacy_support_code_email = ""
+    st.session_state.auth_privacy_support_code_hash = ""
+    st.session_state.auth_privacy_support_code_expires_at = 0.0
+    st.session_state.auth_privacy_support_code_resend_after = 0.0
+    st.session_state.auth_privacy_support_code_attempts = 0
+    st.session_state.auth_privacy_support_verified = False
+    st.session_state.auth_privacy_support_verified_email = ""
+    st.session_state.auth_privacy_support_otp_input = ""
+    st.session_state.auth_privacy_support_clear_otp_input = False
+    st.session_state.auth_privacy_support_clear_identity = False
+    st.session_state.auth_privacy_support_subject = ""
+    st.session_state.auth_privacy_support_message = ""
+    st.session_state.auth_privacy_support_clear_compose = False
+    st.session_state.auth_privacy_support_status = ""
+    st.session_state.auth_privacy_support_error = ""
+    if clear_identity:
+        st.session_state.auth_privacy_support_first_name = ""
+        st.session_state.auth_privacy_support_last_name = ""
+        st.session_state.auth_privacy_support_email = ""
+
+
+def queue_auth_privacy_support_refresh(clear_identity: bool = False, keep_status: bool = False) -> None:
+    st.session_state.auth_privacy_support_code_sent = False
+    st.session_state.auth_privacy_support_code_email = ""
+    st.session_state.auth_privacy_support_code_hash = ""
+    st.session_state.auth_privacy_support_code_expires_at = 0.0
+    st.session_state.auth_privacy_support_code_resend_after = 0.0
+    st.session_state.auth_privacy_support_code_attempts = 0
+    st.session_state.auth_privacy_support_verified = False
+    st.session_state.auth_privacy_support_verified_email = ""
+    st.session_state.auth_privacy_support_clear_otp_input = True
+    st.session_state.auth_privacy_support_clear_compose = True
+    st.session_state.auth_privacy_support_error = ""
+    if clear_identity:
+        st.session_state.auth_privacy_support_clear_identity = True
+    if not keep_status:
+        st.session_state.auth_privacy_support_status = ""
+
+
+def send_auth_privacy_support_code() -> tuple[bool, str]:
+    first_name = str(st.session_state.get("auth_privacy_support_first_name", "")).strip()
+    last_name = str(st.session_state.get("auth_privacy_support_last_name", "")).strip()
+    email = str(st.session_state.get("auth_privacy_support_email", "")).strip().lower()
+    if not first_name or not last_name:
+        return False, "Enter first name and last name."
+    if not is_valid_email_address(email):
+        return False, "Enter a valid email address."
+    config_ok, config_msg = can_send_email_otp()
+    if not config_ok:
+        return False, config_msg
+
+    now_ts = time.time()
+    resend_after_ts = float(st.session_state.get("auth_privacy_support_code_resend_after") or 0.0)
+    if resend_after_ts > now_ts:
+        wait_seconds = max(1, int(resend_after_ts - now_ts))
+        return False, f"Please wait {wait_seconds} seconds before requesting another code."
+
+    ttl_minutes = get_email_otp_ttl_minutes()
+    otp_code = generate_email_otp_code()
+    sent, msg = send_support_verification_code_message(email, otp_code, ttl_minutes)
+    if not sent:
+        return False, msg
+
+    st.session_state.auth_privacy_support_code_sent = True
+    st.session_state.auth_privacy_support_code_email = email
+    st.session_state.auth_privacy_support_code_hash = hash_email_otp(otp_code)
+    st.session_state.auth_privacy_support_code_expires_at = now_ts + float(ttl_minutes * 60)
+    st.session_state.auth_privacy_support_code_resend_after = now_ts + float(get_email_otp_resend_seconds())
+    st.session_state.auth_privacy_support_code_attempts = 0
+    st.session_state.auth_privacy_support_verified = False
+    st.session_state.auth_privacy_support_verified_email = ""
+    return True, "Verification code sent to your email."
+
+
+def verify_auth_privacy_support_code() -> tuple[bool, str]:
+    email = str(st.session_state.get("auth_privacy_support_email", "")).strip().lower()
+    code_email = str(st.session_state.get("auth_privacy_support_code_email", "")).strip().lower()
+    stored_hash = str(st.session_state.get("auth_privacy_support_code_hash", "")).strip()
+    if not bool(st.session_state.get("auth_privacy_support_code_sent")) or not stored_hash:
+        return False, "Request a verification code first."
+    if not email or email != code_email:
+        return False, "Use the same email that received the code."
+
+    expires_at = float(st.session_state.get("auth_privacy_support_code_expires_at") or 0.0)
+    if time.time() > expires_at:
+        st.session_state.auth_privacy_support_code_sent = False
+        st.session_state.auth_privacy_support_code_hash = ""
+        return False, "Verification code expired. Request a new code."
+
+    otp_code = re.sub(r"\D", "", str(st.session_state.get("auth_privacy_support_otp_input", "")).strip())
+    if len(otp_code) != EMAIL_OTP_DIGITS:
+        return False, f"Enter the {EMAIL_OTP_DIGITS}-digit verification code."
+
+    max_attempts = get_email_otp_max_attempts()
+    attempts = int(st.session_state.get("auth_privacy_support_code_attempts") or 0)
+    if attempts >= max_attempts:
+        return False, "Too many attempts. Request a new code."
+
+    expected_hash = hash_email_otp(otp_code)
+    if not hmac.compare_digest(stored_hash, expected_hash):
+        attempts += 1
+        st.session_state.auth_privacy_support_code_attempts = attempts
+        remaining = max(0, max_attempts - attempts)
+        if remaining <= 0:
+            return False, "Invalid code. Too many attempts. Request a new code."
+        return False, f"Invalid code. {remaining} attempts remaining."
+
+    st.session_state.auth_privacy_support_verified = True
+    st.session_state.auth_privacy_support_verified_email = email
+    st.session_state.auth_privacy_support_clear_otp_input = True
+    return True, "Email verified. You can now message support."
+
+
+def render_auth_privacy_support_sheet() -> None:
+    if not bool(st.session_state.get("auth_privacy_support_open", False)):
+        return
+
+    if bool(st.session_state.get("auth_privacy_support_clear_identity", False)):
+        st.session_state.auth_privacy_support_first_name = ""
+        st.session_state.auth_privacy_support_last_name = ""
+        st.session_state.auth_privacy_support_email = ""
+        st.session_state.auth_privacy_support_clear_identity = False
+    if bool(st.session_state.get("auth_privacy_support_clear_otp_input", False)):
+        st.session_state.auth_privacy_support_otp_input = ""
+        st.session_state.auth_privacy_support_clear_otp_input = False
+    if bool(st.session_state.get("auth_privacy_support_clear_compose", False)):
+        st.session_state.auth_privacy_support_subject = ""
+        st.session_state.auth_privacy_support_message = ""
+        st.session_state.auth_privacy_support_clear_compose = False
+
+    with st.container(key="auth_privacy_support_sheet"):
+        support_title_col, support_close_col = st.columns([12, 1], gap="small")
+        with support_title_col:
+            st.markdown(
+                """
+                <div class="auth-privacy-support-title">Support Help Desk</div>
+                <div class="auth-privacy-support-subtitle">
+                    Verify your email first, then send a private support request.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with support_close_col:
+            with st.container(key="auth_privacy_support_close_btn"):
+                close_support_sheet = st.button(
+                    ":material/close:",
+                    key="auth_privacy_support_close_icon_btn",
+                    help="Close support panel",
+                    use_container_width=False,
+                )
+        if close_support_sheet:
+            st.session_state.auth_privacy_support_open = False
+            queue_auth_privacy_support_refresh(clear_identity=True, keep_status=False)
+            st.rerun()
+
+        status_msg = str(st.session_state.get("auth_privacy_support_status", "")).strip()
+        error_msg = str(st.session_state.get("auth_privacy_support_error", "")).strip()
+        if status_msg:
+            st.success(status_msg)
+        if error_msg:
+            st.error(error_msg)
+
+        identity_cols = st.columns(2, gap="small")
+        with identity_cols[0]:
+            first_name = st.text_input(
+                "First Name",
+                key="auth_privacy_support_first_name",
+                placeholder="First name",
+            )
+        with identity_cols[1]:
+            last_name = st.text_input(
+                "Last Name",
+                key="auth_privacy_support_last_name",
+                placeholder="Last name",
+            )
+        with st.container(key="auth_privacy_support_email_row"):
+            email_col, send_code_col = st.columns([4.4, 1.6], gap="small")
+            with email_col:
+                contact_email = st.text_input(
+                    "Email",
+                    key="auth_privacy_support_email",
+                    placeholder="name@example.com",
+                )
+            with send_code_col:
+                with st.container(key="auth_privacy_support_send_code_btn"):
+                    request_code = st.button(
+                        "Send Code",
+                        key="auth_privacy_support_send_code",
+                        use_container_width=True,
+                    )
+
+        resend_after_ts = float(st.session_state.get("auth_privacy_support_code_resend_after") or 0.0)
+        seconds_left = max(0, int(resend_after_ts - time.time()))
+        if seconds_left > 0:
+            st.caption(f"Resend available in {seconds_left}s")
+        else:
+            st.caption("You can request a new code any time.")
+
+        with st.container(key="auth_privacy_support_otp_row"):
+            otp_col, verify_col = st.columns([4.4, 1.6], gap="small")
+            with otp_col:
+                st.text_input(
+                    f"{EMAIL_CODE_NAME} ({EMAIL_OTP_DIGITS} digits)",
+                    key="auth_privacy_support_otp_input",
+                    placeholder="Enter code",
+                )
+            with verify_col:
+                with st.container(key="auth_privacy_support_verify_btn"):
+                    verify_code = st.button(
+                        "Verify",
+                        key="auth_privacy_support_verify_code",
+                        use_container_width=True,
+                    )
+        code_target = str(st.session_state.get("auth_privacy_support_code_email", "")).strip()
+        if code_target:
+            st.caption(f"Code sent to: {code_target}")
+        else:
+            st.caption("Request a code to your email and verify it here.")
+
+        if request_code:
+            st.session_state.auth_privacy_support_error = ""
+            ok, msg = send_auth_privacy_support_code()
+            if ok:
+                st.session_state.auth_privacy_support_status = msg
+            else:
+                st.session_state.auth_privacy_support_status = ""
+                st.session_state.auth_privacy_support_error = msg
+            st.rerun()
+
+        if verify_code:
+            st.session_state.auth_privacy_support_error = ""
+            ok, msg = verify_auth_privacy_support_code()
+            if ok:
+                st.session_state.auth_privacy_support_status = msg
+            else:
+                st.session_state.auth_privacy_support_status = ""
+                st.session_state.auth_privacy_support_error = msg
+            st.rerun()
+
+        verified = bool(st.session_state.get("auth_privacy_support_verified", False))
+        verified_email = str(st.session_state.get("auth_privacy_support_verified_email", "")).strip().lower()
+        if verified and verified_email and verified_email == str(contact_email or "").strip().lower():
+            st.markdown(
+                "<div class='auth-privacy-support-divider'></div>",
+                unsafe_allow_html=True,
+            )
+            st.text_input(
+                "Title",
+                key="auth_privacy_support_subject",
+                placeholder="Brief subject",
+            )
+            st.text_area(
+                "Message",
+                key="auth_privacy_support_message",
+                placeholder="Write your support message here...",
+                height=130,
+            )
+            with st.container(key="auth_privacy_support_send_msg_btn"):
+                send_message = st.button(
+                    "Send :material/send:",
+                    key="auth_privacy_support_send_message",
+                    use_container_width=False,
+                )
+            if send_message:
+                subject = str(st.session_state.get("auth_privacy_support_subject", "")).strip()
+                message_body = str(st.session_state.get("auth_privacy_support_message", "")).strip()
+                first_name = str(st.session_state.get("auth_privacy_support_first_name", "")).strip()
+                last_name = str(st.session_state.get("auth_privacy_support_last_name", "")).strip()
+                sender_email = str(st.session_state.get("auth_privacy_support_email", "")).strip().lower()
+                if not subject:
+                    st.session_state.auth_privacy_support_status = ""
+                    st.session_state.auth_privacy_support_error = "Add a title before sending."
+                elif len(subject) < 4:
+                    st.session_state.auth_privacy_support_status = ""
+                    st.session_state.auth_privacy_support_error = "Title is too short."
+                elif not message_body:
+                    st.session_state.auth_privacy_support_status = ""
+                    st.session_state.auth_privacy_support_error = "Add your message before sending."
+                elif len(message_body) < 12:
+                    st.session_state.auth_privacy_support_status = ""
+                    st.session_state.auth_privacy_support_error = "Message is too short."
+                else:
+                    sent, send_msg = send_support_contact_message(
+                        first_name,
+                        last_name,
+                        sender_email,
+                        subject,
+                        message_body,
+                    )
+                    if sent:
+                        st.session_state.auth_privacy_support_status = send_msg
+                        st.session_state.auth_privacy_support_error = ""
+                        queue_auth_privacy_support_refresh(clear_identity=False, keep_status=True)
+                    else:
+                        st.session_state.auth_privacy_support_status = ""
+                        st.session_state.auth_privacy_support_error = send_msg
+                st.rerun()
+        else:
+            st.caption("Complete verification to open the secure support message composer.")
+
+
+def render_auth_privacy_center_page(logo_data_uri: str) -> None:
+    last_updated = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    logo_block = (
+        (
+            '<div class="auth-privacy-wordmark-wrap">'
+            f'<img src="{logo_data_uri}" alt="ZoSwi" class="auth-privacy-page-logo" />'
+            "</div>"
+        )
+        if logo_data_uri
+        else ""
+    )
+    st.markdown(
+        f"""
+        <div class="auth-privacy-page-wrap">
+            <article class="auth-privacy-a4-sheet">
+                <header class="auth-privacy-sheet-header">
+                    <div class="auth-privacy-sheet-header-top">
+                        {logo_block}
+                        <span class="auth-privacy-sheet-pill">Privacy Center</span>
+                    </div>
+                    <h2 class="auth-privacy-heading">
+                        <span class="auth-privacy-heading-text">ZoSwi Privacy Policy</span>
+                        <span class="auth-privacy-inline-badge">
+                            <span class="auth-privacy-inline-badge-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M12 3l7 3v5c0 5-2.8 8.8-7 10-4.2-1.2-7-5-7-10V6l7-3z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                                    <path d="M9.2 12.3l1.9 1.9 3.9-3.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                                </svg>
+                            </span>
+                            <span>Privacy Protected</span>
+                        </span>
+                    </h2>
+                    <p class="auth-privacy-sheet-meta">Last updated: {last_updated}</p>
+                    <p>
+                        ZoSwi is built to help people apply with confidence. Your privacy comes before product
+                        growth goals, and your data is not used for resale or personal-data monetization.
+                    </p>
+                </header>
+                <section class="auth-privacy-sheet-section">
+                    <h3>1. Session-First Privacy</h3>
+                    <ul>
+                        <li>Resume and JD analysis is handled in your active session context for career matching.</li>
+                        <li>Temporary session context is cleared on logout/session reset, including in-session drafts.</li>
+                        <li>You choose what to upload and can continue without sharing unnecessary personal details.</li>
+                    </ul>
+                </section>
+                <section class="auth-privacy-sheet-section">
+                    <h3>2. Why Limited Data Is Used</h3>
+                    <ul>
+                        <li>To authenticate users and keep your account protected.</li>
+                        <li>To generate AI-driven recommendations and improve match relevance.</li>
+                        <li>To support sponsorship-fit checks, role filters, and application guidance.</li>
+                        <li>To keep the platform stable and secure for real users.</li>
+                    </ul>
+                </section>
+                <section class="auth-privacy-sheet-section">
+                    <h3>3. Sharing & Third-Party Services</h3>
+                    <p>
+                        ZoSwi may use integrated services for job feeds and AI processing only when required to run
+                        requested features. ZoSwi does not sell personal data and does not treat user data as a
+                        business asset.
+                    </p>
+                </section>
+                <section class="auth-privacy-sheet-section">
+                    <h3>4. Account Records & Your Controls</h3>
+                    <ul>
+                        <li>Account/security records are retained only for sign-in, protection, and reliability.</li>
+                        <li>You can request profile/data cleanup through support channels.</li>
+                        <li>You stay in control of what content you upload and keep in the system.</li>
+                    </ul>
+                </section>
+                <section class="auth-privacy-sheet-section">
+                    <h3>5. Security Commitment</h3>
+                    <p>
+                        We apply practical safeguards across storage, access controls, and session handling.
+                        No online platform can guarantee absolute security, but ZoSwi continuously improves controls.
+                    </p>
+                </section>
+                <section class="auth-privacy-sheet-section">
+                    <h3>6. Human in the Loop Reminder</h3>
+                    <p>
+                        ZoSwi can generate AI-based application guidance, but you make the final decision.
+                        Human judgment should always remain central to where and how you apply.
+                    </p>
+                </section>
+                <div class="auth-privacy-contact-highlight">
+                    <div class="auth-privacy-contact-note">
+                        <span class="auth-privacy-contact-note-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path d="M4 6.8A2.8 2.8 0 0 1 6.8 4h10.4A2.8 2.8 0 0 1 20 6.8v6.4A2.8 2.8 0 0 1 17.2 16H9l-4.1 3.6c-.4.3-.9 0-.9-.5V16.2A2.8 2.8 0 0 1 4 13.2V6.8z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                        </span>
+                        <span>Feel free to contact us using the message icon.</span>
+                    </div>
+                </div>
+            </article>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_auth_screen() -> None:
     render_app_styles()
     render_zoswi_outside_minimize_listener(False)
     render_top_left_logo()
+    logo_data_uri = get_logo_data_uri()
+    if "auth_privacy_center_open" not in st.session_state:
+        st.session_state.auth_privacy_center_open = False
+    if bool(st.session_state.get("auth_privacy_center_open", False)):
+        title_col, actions_col = st.columns([20, 1.2], gap="small")
+        with title_col:
+            st.title("Resume AI Checker")
+        with actions_col:
+            with st.container(key="auth_privacy_header_actions"):
+                support_col, close_col = st.columns([1, 1], gap="small")
+                with support_col:
+                    with st.container(key="auth_privacy_header_support"):
+                        toggle_support_center = st.button(
+                            ":material/mail:",
+                            key="auth_privacy_header_support_btn",
+                            help="Support",
+                            use_container_width=True,
+                        )
+                with close_col:
+                    with st.container(key="auth_privacy_header_close"):
+                        close_privacy_center = st.button(
+                            ":material/close:",
+                            key="auth_privacy_header_close_btn",
+                            help="Close Privacy Center",
+                            use_container_width=True,
+                        )
+        if toggle_support_center:
+            next_support_open = not bool(st.session_state.get("auth_privacy_support_open", False))
+            st.session_state.auth_privacy_support_open = next_support_open
+            if next_support_open:
+                st.session_state.auth_privacy_support_status = ""
+                st.session_state.auth_privacy_support_error = ""
+            else:
+                queue_auth_privacy_support_refresh(clear_identity=True, keep_status=False)
+            st.rerun()
+        if close_privacy_center:
+            st.session_state.auth_privacy_center_open = False
+            st.session_state.auth_privacy_support_open = False
+            reset_auth_privacy_support_state(clear_identity=True)
+            st.rerun()
+        render_auth_privacy_center_page(logo_data_uri)
+        render_auth_privacy_support_sheet()
+        return
     st.title("Resume AI Checker")
     apply_pending_signup_form_reset()
     apply_pending_password_reset_form_reset()
@@ -7428,18 +8463,15 @@ def render_auth_screen() -> None:
                             password = st.text_input("Password", type="password")
                             open_reset = False
                             with st.container(key="login_forgot_row"):
-                                forgot_label_col, forgot_reset_col = st.columns([8, 2], gap="small")
-                                with forgot_label_col:
-                                    st.markdown(
-                                        '<div class="auth-forgot-label">Don\'t remember your password?</div>',
-                                        unsafe_allow_html=True,
+                                st.markdown(
+                                    '<div class="auth-forgot-label">Don\'t remember your password?</div>',
+                                    unsafe_allow_html=True,
+                                )
+                                with st.container(key="login_forgot_reset_btn"):
+                                    open_reset = st.form_submit_button(
+                                        "reset",
+                                        use_container_width=False,
                                     )
-                                with forgot_reset_col:
-                                    with st.container(key="login_forgot_reset_btn"):
-                                        open_reset = st.form_submit_button(
-                                            "reset",
-                                            use_container_width=False,
-                                        )
                             with st.container(key="login_actions"):
                                 with st.container(key="login_submit_btn"):
                                     submit = st.form_submit_button("Login", use_container_width=False, type="primary")
@@ -7486,6 +8518,10 @@ def render_auth_screen() -> None:
                     st.session_state.clear_zoswi_input = True
                     st.session_state.full_chat_submit = False
                     st.session_state.clear_full_chat_input = True
+                    st.session_state.ai_workspace_media_bytes = b""
+                    st.session_state.ai_workspace_media_mime = ""
+                    st.session_state.ai_workspace_media_file_name = ""
+                    st.session_state.ai_workspace_media_label = ""
                     st.session_state.dashboard_view = "home"
                     st.session_state.user_menu_open = False
                     st.session_state.auth_session_token = auth_token or None
@@ -7715,6 +8751,23 @@ def render_auth_screen() -> None:
                                 st.rerun()
 
         render_email_verification_panel()
+        with st.container(key="auth_privacy_center_link"):
+            spacer_col, privacy_col = st.columns([8.2, 1.8], gap="small")
+            with spacer_col:
+                st.markdown("", unsafe_allow_html=True)
+            with privacy_col:
+                privacy_center_toggle = st.button(
+                    "Privacy Center",
+                    key="auth_privacy_center_toggle_btn",
+                    use_container_width=True,
+                )
+        if privacy_center_toggle:
+            next_open = not bool(st.session_state.get("auth_privacy_center_open", False))
+            st.session_state.auth_privacy_center_open = next_open
+            if next_open:
+                st.session_state.auth_privacy_support_open = False
+                reset_auth_privacy_support_state(clear_identity=True)
+            st.rerun()
 
 
 def logout_current_user() -> None:
@@ -7745,11 +8798,18 @@ def logout_current_user() -> None:
     st.session_state.ai_workspace_pending_prompt = None
     st.session_state.ai_workspace_upload_nonce = 0
     st.session_state.ai_workspace_attachments = []
+    st.session_state.ai_workspace_media_bytes = b""
+    st.session_state.ai_workspace_media_mime = ""
+    st.session_state.ai_workspace_media_file_name = ""
+    st.session_state.ai_workspace_media_label = ""
     st.session_state.ai_workspace_unlock_code = ""
     st.session_state.ai_workspace_unlock_status = ""
     st.session_state.ai_workspace_unlock_ok = False
     st.session_state.user_menu_open = False
     st.session_state.auth_session_token = None
+    st.session_state.auth_privacy_center_open = False
+    st.session_state.auth_privacy_support_open = False
+    reset_auth_privacy_support_state(clear_identity=True)
     st.session_state.latest_resume_text = ""
     st.session_state.latest_job_description = ""
     st.session_state.latest_resume_file_name = ""
@@ -7862,6 +8922,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
 
 
 def render_home_dashboard(user: dict[str, Any]) -> None:
+    is_mobile = is_mobile_browser()
     st.markdown(
         """
         <div class="ai-hero">
@@ -7897,18 +8958,30 @@ def render_home_dashboard(user: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
     analyze_clicked = False
-    upload_col, jd_col = st.columns(2)
-    with upload_col:
-        uploaded_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
-    with jd_col:
-        job_description = st.text_area("Paste Job Description", height=280)
-        st.caption(f"JD must include role details and at least {MIN_JOB_DESCRIPTION_WORDS} words.")
-        with st.container(key="home_jd_analyze_btn"):
-            analyze_clicked = st.button(
-                "Run Resume-JD Analysis",
-                key="home_run_resume_jd_analysis_btn",
-                use_container_width=False,
-            )
+    with st.container(key="home_dashboard_input_cols"):
+        if is_mobile:
+            uploaded_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
+            job_description = st.text_area("Paste Job Description", height=240)
+            st.caption(f"JD must include role details and at least {MIN_JOB_DESCRIPTION_WORDS} words.")
+            with st.container(key="home_jd_analyze_btn"):
+                analyze_clicked = st.button(
+                    "Run Resume-JD Analysis",
+                    key="home_run_resume_jd_analysis_btn",
+                    use_container_width=True,
+                )
+        else:
+            upload_col, jd_col = st.columns(2)
+            with upload_col:
+                uploaded_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
+            with jd_col:
+                job_description = st.text_area("Paste Job Description", height=280)
+                st.caption(f"JD must include role details and at least {MIN_JOB_DESCRIPTION_WORDS} words.")
+                with st.container(key="home_jd_analyze_btn"):
+                    analyze_clicked = st.button(
+                        "Run Resume-JD Analysis",
+                        key="home_run_resume_jd_analysis_btn",
+                        use_container_width=False,
+                    )
 
     if analyze_clicked:
         if not uploaded_file:
@@ -8039,6 +9112,8 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
     full_name = str(user.get("full_name", "")).strip()
     first_name = full_name.split()[0] if full_name else "Candidate"
     user_name_label = first_name if first_name else "You"
+    is_mobile = is_mobile_browser()
+    full_chat_height = 420 if is_mobile else 560
     active_chat_id = int(st.session_state.get("active_chat_id") or 0)
     recent_sessions = get_recent_chat_sessions(user_id, limit=40)
 
@@ -8099,7 +9174,7 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
                 st.markdown("#### ZoSwi Live Chat")
                 st.caption(f"{time_based_greeting()}, {first_name}")
 
-                with st.container(height=560):
+                with st.container(height=full_chat_height):
                     chat_history_container = st.container()
                     live_reply_container = st.container()
                     with chat_history_container:
@@ -8118,7 +9193,7 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
                 pending_prompt = st.session_state.get("bot_pending_prompt")
                 is_waiting_for_reply = bool(pending_prompt)
                 with st.container(key="full_chat_input_wrap"):
-                    input_cols = st.columns([9, 1])
+                    input_cols = st.columns([8.4, 1.6]) if is_mobile else st.columns([9, 1])
                     with input_cols[0]:
                         message = st.text_input(
                             "Message ZoSwi",
@@ -8235,7 +9310,7 @@ def get_current_session_user() -> Any:
 
 
 def main() -> None:
-    config = PageConfigDTO(page_title="Resume AI Checker", layout="wide", initial_sidebar_state="expanded")
+    config = PageConfigDTO(page_title="Resume AI Checker", layout="wide", initial_sidebar_state="auto")
     handlers = AppRuntimeHandlersDTO(
         init_db=init_db,
         init_state=init_state,

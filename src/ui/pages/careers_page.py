@@ -4,6 +4,7 @@ from __future__ import annotations
 from src.app_runtime import *  # noqa: F401,F403
 
 def render_careers_profile_setup() -> None:
+    is_mobile = is_mobile_browser()
     st.markdown("### Career Tailoring Setup")
     st.caption("Choose how ZoSwi should tailor your job matching context.")
     mode = st.radio(
@@ -38,24 +39,42 @@ def render_careers_profile_setup() -> None:
     else:
         st.caption("Smart discovery enabled: rankings explore wider role possibilities from your resume profile.")
 
-    setup_cols = st.columns(2, gap="small")
-    with setup_cols[0]:
-        uploaded_resume = st.file_uploader(
-            "Upload Resume for Careers (PDF or DOCX)",
-            type=["pdf", "docx"],
-            key="careers_resume_upload",
-        )
-    with setup_cols[1]:
-        jd_placeholder = "Paste target JD to tune matching quality..." if mode == "Resume + JD" else ""
-        target_jd_input = st.text_area(
-            "Target Job Description",
-            key="careers_target_job_description_input",
-            height=170,
-            placeholder=jd_placeholder,
-            disabled=(mode != "Resume + JD"),
-        )
-        if mode != "Resume + JD":
-            st.caption("Resume Only mode selected. Matching will use your resume + live job postings.")
+    with st.container(key="careers_profile_setup_cols"):
+        if is_mobile:
+            uploaded_resume = st.file_uploader(
+                "Upload Resume for Careers (PDF or DOCX)",
+                type=["pdf", "docx"],
+                key="careers_resume_upload",
+            )
+            jd_placeholder = "Paste target JD to tune matching quality..." if mode == "Resume + JD" else ""
+            target_jd_input = st.text_area(
+                "Target Job Description",
+                key="careers_target_job_description_input",
+                height=170,
+                placeholder=jd_placeholder,
+                disabled=(mode != "Resume + JD"),
+            )
+            if mode != "Resume + JD":
+                st.caption("Resume Only mode selected. Matching will use your resume + live job postings.")
+        else:
+            setup_cols = st.columns(2, gap="small")
+            with setup_cols[0]:
+                uploaded_resume = st.file_uploader(
+                    "Upload Resume for Careers (PDF or DOCX)",
+                    type=["pdf", "docx"],
+                    key="careers_resume_upload",
+                )
+            with setup_cols[1]:
+                jd_placeholder = "Paste target JD to tune matching quality..." if mode == "Resume + JD" else ""
+                target_jd_input = st.text_area(
+                    "Target Job Description",
+                    key="careers_target_job_description_input",
+                    height=170,
+                    placeholder=jd_placeholder,
+                    disabled=(mode != "Resume + JD"),
+                )
+                if mode != "Resume + JD":
+                    st.caption("Resume Only mode selected. Matching will use your resume + live job postings.")
 
     with st.container(key="careers_prepare_profile_btn_wrap"):
         prepare_clicked = st.button(
@@ -123,6 +142,7 @@ def render_careers_profile_setup() -> None:
 
 
 def render_careers_motivation_hero(full_name: str, analysis_score: int) -> None:
+    is_mobile = is_mobile_browser()
     first_name = str(full_name or "").strip().split(" ")[0] if str(full_name or "").strip() else "Candidate"
     safe_name = str(first_name or "Candidate").strip() or "Candidate"
     safe_score = max(0, min(100, int(analysis_score or 0)))
@@ -273,12 +293,13 @@ def render_careers_motivation_hero(full_name: str, analysis_score: int) -> None:
         }})();
         </script>
         """,
-        height=230,
+        height=260 if is_mobile else 230,
     )
 
 
 
 def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
+    is_mobile = is_mobile_browser()
     user_id = int(user.get("id") or 0)
     resume_text, target_job_description = get_active_careers_profile_context()
     if not resume_text:
@@ -327,8 +348,7 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
     with st.container(key="careers_job_filters_compact"):
-        filter_cols = st.columns(2, gap="small")
-        with filter_cols[0]:
+        if is_mobile:
             role_query = st.text_input(
                 "Target Role",
                 key="job_search_role_query",
@@ -347,7 +367,6 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
                 format_func=get_posted_within_label,
                 help="Filter jobs by posted date, such as past 24 hours or past 7 days.",
             )
-        with filter_cols[1]:
             visa_status = st.selectbox(
                 "Visa Status",
                 options=JOB_SEARCH_VISA_STATUSES,
@@ -370,6 +389,50 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
                 key="job_search_position_types",
                 help="Choose one or more filters like Full-Time, Contract, or W2.",
             )
+        else:
+            filter_cols = st.columns(2, gap="small")
+            with filter_cols[0]:
+                role_query = st.text_input(
+                    "Target Role",
+                    key="job_search_role_query",
+                    placeholder="ex: Software Engineer, Data Scientist",
+                )
+                preferred_location = st.text_input(
+                    "Preferred Location",
+                    key="job_search_preferred_location",
+                    placeholder="ex: New York, Austin, Remote",
+                )
+                posted_options = [value for _, value in JOB_SEARCH_POSTED_WITHIN_OPTIONS]
+                posted_within_days = st.selectbox(
+                    "Recently Posted",
+                    options=posted_options,
+                    key="job_search_posted_within_days",
+                    format_func=get_posted_within_label,
+                    help="Filter jobs by posted date, such as past 24 hours or past 7 days.",
+                )
+            with filter_cols[1]:
+                visa_status = st.selectbox(
+                    "Visa Status",
+                    options=JOB_SEARCH_VISA_STATUSES,
+                    key="job_search_visa_status",
+                )
+                sponsorship_required = st.checkbox(
+                    "Need employer visa/H1B sponsorship",
+                    key="job_search_sponsorship_required",
+                )
+                max_results = st.slider(
+                    "Max results",
+                    min_value=3,
+                    max_value=JOB_SEARCH_MAX_RESULTS_LIMIT,
+                    value=JOB_SEARCH_MAX_RESULTS_DEFAULT,
+                    key="job_search_max_results",
+                )
+                selected_position_types = st.multiselect(
+                    "Position Type Filters",
+                    options=JOB_POSITION_FILTER_OPTIONS,
+                    key="job_search_position_types",
+                    help="Choose one or more filters like Full-Time, Contract, or W2.",
+                )
 
     render_application_confidence_card(
         role_query=str(role_query or ""),
@@ -531,13 +594,18 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
                 """,
                 unsafe_allow_html=True,
             )
-            detail_cols = st.columns(3, gap="small")
-            with detail_cols[0]:
+            if is_mobile:
                 st.caption(f"Resume match: {resume_match_score}%")
-            with detail_cols[1]:
                 st.caption(f"Sponsorship: {sponsorship_status}")
-            with detail_cols[2]:
                 st.caption(f"Sponsorship confidence: {sponsorship_confidence}%")
+            else:
+                detail_cols = st.columns(3, gap="small")
+                with detail_cols[0]:
+                    st.caption(f"Resume match: {resume_match_score}%")
+                with detail_cols[1]:
+                    st.caption(f"Sponsorship: {sponsorship_status}")
+                with detail_cols[2]:
+                    st.caption(f"Sponsorship confidence: {sponsorship_confidence}%")
             st.caption(f"Position types: {position_tags_text}")
             if reason:
                 st.caption(reason)
