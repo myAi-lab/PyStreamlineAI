@@ -1,0 +1,8 @@
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+backend/.env
+backend/storage/*
+!backend/storage/.gitkeep
+**/__pycache__/
+**/*.pyc

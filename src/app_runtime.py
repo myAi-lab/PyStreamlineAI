@@ -16,9 +16,9 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -27,9 +27,9 @@ import pdfplumber
 import streamlit as st
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI as ZoSwiAIChat, OpenAIEmbeddings as ZoSwiAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from openai import OpenAI
+from openai import OpenAI as ZoSwiAIClient
 from src.controller.app_controller import run_app_runtime
 from src.dto.auth_dto import PasswordResetInputDTO
 from src.dto.runtime_dto import AppRuntimeHandlersDTO, PageConfigDTO
@@ -117,12 +117,158 @@ AI_WORKSPACE_ADULT_BLOCK_MESSAGE = (
     "I can’t help with 18+ or explicit sexual content. "
     "I can help with career, coding, interview prep, and professional tasks."
 )
+ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi Live Workspace"
+ZOSWI_INTERVIEW_APP_URL_DEFAULT = "http://127.0.0.1:3000/interview"
+ZOSWI_BLOCKED_APP_NAME_PATTERN = re.compile(
+    r"(?i)\b(?:"
+    r"chat\s*gpt|chatgpt|claude|perplexity|"
+    r"github\s+copilot|microsoft\s+copilot|copilot|"
+    r"gemini|bard|deepseek|llama|mistral|grok|cursor"
+    r")\b"
+)
+ZOSWI_BLOCKED_EXTERNAL_APP_PATTERN = re.compile(
+    r"(?i)\b(?:"
+    r"photoshop|adobe\s+photoshop|gimp|picsart|canva|figma|"
+    r"midjourney|stable\s+diffusion|dall[\s\-]?e|"
+    r"lightroom|premiere(?:\s+pro)?|after\s+effects|capcut|krita"
+    r")\b"
+)
+ZOSWI_STREAM_SANITIZE_TAIL_CHARS = 96
+ZOSWI_BUILDER_NAME_KEY = "ZOSWI_BUILDER_NAME"
+ZOSWI_SUCCESS_MOTIVATION_QUOTES = [
+    "The future depends on what you do today. - Mahatma Gandhi",
+    "Success is not final, failure is not fatal: it is the courage to continue that counts. - Winston Churchill",
+    "Do the best you can until you know better. Then when you know better, do better. - Maya Angelou",
+    "If you are not willing to risk the usual, you will have to settle for the ordinary. - Jim Rohn",
+    "The way to get started is to quit talking and begin doing. - Walt Disney",
+    "It always seems impossible until it is done. - Nelson Mandela",
+    "Do not watch the clock; do what it does. Keep going. - Sam Levenson",
+    "The only way to do great work is to love what you do. - Steve Jobs",
+    "Believe you can and you are halfway there. - Theodore Roosevelt",
+    "Opportunities do not happen. You create them. - Chris Grosser",
+    "I have not failed. I have just found 10000 ways that will not work. - Thomas Edison",
+    "Dream big and dare to fail. - Norman Vaughan",
+    "You miss 100 percent of the shots you do not take. - Wayne Gretzky",
+    "Whether you think you can or you think you cannot, you are right. - Henry Ford",
+    "Try not to become a person of success, but rather a person of value. - Albert Einstein",
+    "The successful warrior is the average person with laser-like focus. - Bruce Lee",
+    "A person who never made a mistake never tried anything new. - Albert Einstein",
+    "Hardships often prepare ordinary people for an extraordinary destiny. - C.S. Lewis",
+    "Act as if what you do makes a difference. It does. - William James",
+    "Quality means doing it right when no one is looking. - Henry Ford",
+    "The secret of getting ahead is getting started. - Mark Twain",
+    "Small deeds done are better than great deeds planned. - Peter Marshall",
+    "What you do today can improve all your tomorrows. - Ralph Marston",
+    "Success usually comes to those who are too busy to be looking for it. - Henry David Thoreau",
+    "There are no shortcuts to any place worth going. - Beverly Sills",
+    "The only limit to our realization of tomorrow is our doubts of today. - Franklin D. Roosevelt",
+    "Do one thing every day that scares you. - Eleanor Roosevelt",
+    "The harder I work, the luckier I get. - Samuel Goldwyn",
+    "Do not wait to strike till the iron is hot; make it hot by striking. - William Butler Yeats",
+    "Discipline is choosing between what you want now and what you want most. - Abraham Lincoln",
+    "Perseverance is not a long race; it is many short races one after another. - Walter Elliot",
+    "You are never too old to set another goal or to dream a new dream. - C.S. Lewis",
+    "Success is the sum of small efforts, repeated day in and day out. - Robert Collier",
+    "Keep your face always toward the sunshine and shadows will fall behind you. - Walt Whitman",
+    "If you can dream it, you can do it. - Walt Disney",
+    "Go as far as you can see; when you get there, you will be able to see further. - Thomas Carlyle",
+    "Motivation gets you going, but discipline keeps you growing. - John C. Maxwell",
+    "Without hustle, talent will only carry you so far. - Gary Vaynerchuk",
+    "Success is liking yourself, liking what you do, and liking how you do it. - Maya Angelou",
+    "The best way to predict the future is to create it. - Peter Drucker",
+    "If opportunity does not knock, build a door. - Milton Berle",
+    "Either you run the day or the day runs you. - Jim Rohn",
+    "Great things are done by a series of small things brought together. - Vincent van Gogh",
+    "The difference between ordinary and extraordinary is that little extra. - Jimmy Johnson",
+    "Success is where preparation and opportunity meet. - Bobby Unser",
+    "Do not be pushed by your problems. Be led by your dreams. - Ralph Waldo Emerson",
+    "Do what you can, with what you have, where you are. - Theodore Roosevelt",
+    "Courage is grace under pressure. - Ernest Hemingway",
+    "When something is important enough, you do it even if the odds are not in your favor. - Elon Musk",
+    "The man who moves a mountain begins by carrying away small stones. - Confucius",
+    "Ambition is the path to success. Persistence is the vehicle you arrive in. - Bill Bradley",
+    "The best revenge is massive success. - Frank Sinatra",
+    "Fall seven times, stand up eight. - Japanese Proverb",
+    "Do not let what you cannot do interfere with what you can do. - John Wooden",
+    "Energy and persistence conquer all things. - Benjamin Franklin",
+    "Well done is better than well said. - Benjamin Franklin",
+    "Success is not in what you have, but who you are. - Bo Bennett",
+    "It does not matter how slowly you go as long as you do not stop. - Confucius",
+    "Everything you have ever wanted is on the other side of fear. - George Addair",
+    "You become what you believe. - Oprah Winfrey",
+    "Never bend your head. Hold it high. Look the world straight in the eye. - Helen Keller",
+    "The journey of a thousand miles begins with one step. - Lao Tzu",
+    "Do what you feel in your heart to be right, for you will be criticized anyway. - Eleanor Roosevelt",
+    "Start where you are. Use what you have. Do what you can. - Arthur Ashe",
+    "Your time is limited, so do not waste it living someone else's life. - Steve Jobs",
+    "Today a reader, tomorrow a leader. - Margaret Fuller",
+    "The expert in anything was once a beginner. - Helen Hayes",
+    "The only place where success comes before work is in the dictionary. - Vidal Sassoon",
+    "A goal properly set is halfway reached. - Zig Ziglar",
+    "You do not have to be great to start, but you have to start to be great. - Zig Ziglar",
+    "What lies behind us and what lies before us are tiny matters compared to what lies within us. - Ralph Waldo Emerson",
+    "Action is the foundational key to all success. - Pablo Picasso",
+    "Build your own dreams, or someone else will hire you to build theirs. - Farrah Gray",
+    "I never dreamed about success. I worked for it. - Estee Lauder",
+    "Be so good they cannot ignore you. - Steve Martin",
+    "Do not count the days, make the days count. - Muhammad Ali",
+    "It is never too late to be what you might have been. - George Eliot",
+    "Success is walking from failure to failure with no loss of enthusiasm. - Winston Churchill",
+    "Everything should be made as simple as possible, but not simpler. - Albert Einstein",
+    "You cannot cross the sea merely by standing and staring at the water. - Rabindranath Tagore",
+    "If people are doubting how far you can go, go so far that you cannot hear them anymore. - Michele Ruiz",
+    "The best preparation for tomorrow is doing your best today. - H. Jackson Brown Jr.",
+    "A winner is a dreamer who never gives up. - Nelson Mandela",
+    "The only impossible journey is the one you never begin. - Tony Robbins",
+    "Do not limit your challenges. Challenge your limits. - Jerry Dunn",
+    "If you want to achieve greatness stop asking for permission. - Eddie Colla",
+    "Failure is simply the opportunity to begin again, this time more intelligently. - Henry Ford",
+    "Success is not for the lazy. - Sofia Vergara",
+    "Success does not come from what you do occasionally. It comes from what you do consistently. - Marie Forleo",
+    "Keep your eyes on the stars, and your feet on the ground. - Theodore Roosevelt",
+    "A river cuts through rock not because of its power but because of its persistence. - James N. Watkins",
+    "Learning never exhausts the mind. - Leonardo da Vinci",
+    "Do not let yesterday take up too much of today. - Will Rogers",
+    "Work hard in silence, let success make the noise. - Frank Ocean",
+    "Where focus goes, energy flows. - Tony Robbins",
+    "Progress, not perfection. - Marie Forleo",
+    "The pain you feel today will be the strength you feel tomorrow. - Arnold Schwarzenegger",
+    "If you get tired, learn to rest, not to quit. - Banksy",
+    "Success is a journey, not a destination. - Arthur Ashe",
+    "Turn your wounds into wisdom. - Oprah Winfrey",
+]
+ZOSWI_GLOBAL_MUSIC_TRACKS = [
+    {"name": "Focus Flow", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"},
+    {"name": "Deep Work", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"},
+    {"name": "Calm Build", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"},
+    {"name": "Night Sprint", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"},
+]
+ZOSWI_MUSIC_SEARCH_TIMEOUT_SECONDS = 8
+ZOSWI_AUDIUS_BASE_URL = "https://api.audius.co"
+ZOSWI_AUDIUS_APP_NAME = "ZoSwi"
+ZOSWI_MUSIC_FEATURE_FLAG_KEY = "ZOSWI_MUSIC_BAR_ENABLED"
+ZOSWI_FEATURE_CAREERS_ENABLED_KEY = "ZOSWI_FEATURE_CAREERS_ENABLED"
+ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED_KEY = "ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED"
+ZOSWI_FEATURE_IMMIGRATION_UPDATES_ENABLED_KEY = "ZOSWI_FEATURE_IMMIGRATION_UPDATES_ENABLED"
+ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED_KEY = "ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED"
+ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED_KEY = "ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED"
+ZOSWI_DASHBOARD_FEATURE_FLAGS: dict[str, tuple[str, str]] = {
+    "careers": (ZOSWI_FEATURE_CAREERS_ENABLED_KEY, "careers_enabled"),
+    "ai_workspace": (ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED_KEY, "live_workspace_enabled"),
+    "immigration_updates": (ZOSWI_FEATURE_IMMIGRATION_UPDATES_ENABLED_KEY, "immigration_updates_enabled"),
+    "coding_room": (ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED_KEY, "ai_coding_room_enabled"),
+    "live_interview": (ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED_KEY, "live_ai_interview_enabled"),
+}
 JOB_SEARCH_MAX_RESULTS_DEFAULT = 5
 JOB_SEARCH_MAX_RESULTS_LIMIT = 15
 JOB_SEARCH_FETCH_CACHE_TTL_SECONDS = 300
 JOB_SEARCH_API_TIMEOUT_SECONDS = 12
 JOB_SEARCH_SCORING_MAX_WORKERS = 4
 JOB_SEARCH_MAX_AI_EVALUATIONS = 8
+JOB_SEARCH_MIN_RESUME_MATCH_STRICT = 48
+JOB_SEARCH_MIN_ROLE_RELEVANCE_STRICT = 45
+JOB_SEARCH_MIN_RESUME_MATCH_RELAXED = 38
+JOB_SEARCH_MIN_ROLE_RELEVANCE_RELAXED = 30
 JOB_SEARCH_POSTED_WITHIN_OPTIONS: list[tuple[str, int]] = [
     ("Anytime", 0),
     ("Past 24 hours", 1),
@@ -134,6 +280,7 @@ JOB_SEARCH_POSTED_WITHIN_OPTIONS: list[tuple[str, int]] = [
 JOB_SEARCH_PROVIDER_OPTIONS = [
     "Adzuna",
     "Remotive",
+    "Jooble",
     "USAJobs",
 ]
 JOB_SEARCH_VISA_STATUSES = [
@@ -151,6 +298,40 @@ JOB_POSITION_FILTER_OPTIONS = [
     "C2C",
     "Part-Time",
 ]
+AGENTIVE_JOB_ACTION_TOKENS = (
+    "find",
+    "search",
+    "show",
+    "match",
+    "recommend",
+    "shortlist",
+    "apply",
+    "check",
+    "list",
+)
+AGENTIVE_JOB_OBJECT_TOKENS = (
+    "job",
+    "jobs",
+    "role",
+    "roles",
+    "opening",
+    "openings",
+    "position",
+    "positions",
+)
+AGENTIVE_WORK_AUTH_TOKENS = (
+    "sponsorship",
+    "visa",
+    "h1b",
+    "h-1b",
+    "opt",
+    "cpt",
+    "w2",
+    "c2c",
+    "full-time",
+    "full time",
+    "contract",
+)
 PUBLIC_EMAIL_DOMAINS = {
     "gmail.com",
     "googlemail.com",
@@ -279,14 +460,33 @@ class DBConnection:
         self._raw_connection.close()
 
 
+def _normalize_database_url(raw_url: str) -> str:
+    cleaned = str(raw_url or "").strip()
+    if not cleaned:
+        return ""
+    parsed = urlsplit(cleaned)
+    if parsed.scheme not in {"postgres", "postgresql"}:
+        return cleaned
+    hostname = str(parsed.hostname or "").strip().lower()
+    if "supabase.com" not in hostname:
+        return cleaned
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    has_sslmode = any(str(key or "").strip().lower() == "sslmode" for key, _ in query_pairs)
+    if has_sslmode:
+        return cleaned
+    query_pairs.append(("sslmode", "require"))
+    normalized_query = urlencode(query_pairs, doseq=True)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, normalized_query, parsed.fragment))
+
+
 def get_database_url() -> str:
-    env_url = str(os.getenv("DATABASE_URL", "")).strip()
+    env_url = _normalize_database_url(os.getenv("DATABASE_URL", ""))
     if env_url:
         return env_url
     try:
         db_cfg = st.secrets.get("database")
         if hasattr(db_cfg, "get"):
-            return str(db_cfg.get("url", "")).strip()
+            return _normalize_database_url(str(db_cfg.get("url", "")))
     except Exception:
         pass
     return ""
@@ -318,6 +518,73 @@ def get_config_value(
         return str(sectionless_value or "").strip() or str(default or "").strip()
     except Exception:
         return str(default or "").strip()
+
+
+def get_zoswi_builder_name() -> str:
+    configured_value = get_config_value(
+        ZOSWI_BUILDER_NAME_KEY,
+        "branding",
+        "builder_name",
+        "",
+    )
+    if not configured_value:
+        configured_value = get_db_setting_value(ZOSWI_BUILDER_NAME_KEY)
+    cleaned = re.sub(r"\s+", " ", str(configured_value or "").strip())
+    return cleaned[:120]
+
+
+def normalize_interview_requirement_type(raw_value: str) -> str:
+    cleaned = str(raw_value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    mapping = {
+        "mixed": "mixed",
+        "hybrid": "mixed",
+        "technical": "technical",
+        "tech": "technical",
+        "behavioral": "behavioral",
+        "behavioural": "behavioral",
+        "behavior": "behavioral",
+    }
+    return mapping.get(cleaned, "mixed")
+
+
+def get_zoswi_live_interview_base_url() -> str:
+    configured = get_config_value(
+        "ZOSWI_INTERVIEW_APP_URL",
+        "interview",
+        "app_url",
+        ZOSWI_INTERVIEW_APP_URL_DEFAULT,
+    )
+    parsed = urlsplit(configured)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    path = str(parsed.path or "").strip()
+    if not path or path == "/":
+        path = "/interview"
+    base = f"{parsed.scheme}://{parsed.netloc}{path}"
+    if parsed.query:
+        base = f"{base}?{parsed.query}"
+    return base
+
+
+def build_zoswi_live_interview_launch_url(candidate_name: str, role: str, requirement_type: str) -> str:
+    base_url = get_zoswi_live_interview_base_url()
+    if not base_url:
+        return ""
+    cleaned_name = str(candidate_name or "").strip()[:160]
+    cleaned_role = str(role or "").strip()[:160]
+    if not cleaned_name or not cleaned_role:
+        return ""
+    normalized_type = normalize_interview_requirement_type(requirement_type)
+    query = urlencode(
+        {
+            "candidate": cleaned_name,
+            "role": cleaned_role,
+            "type": normalized_type,
+            "source": "streamlit",
+        }
+    )
+    joiner = "&" if "?" in base_url else "?"
+    return f"{base_url}{joiner}{query}"
 
 
 def get_db_setting_value(setting_key: str) -> str:
@@ -458,6 +725,8 @@ def is_unique_violation(exc: Exception) -> bool:
 def render_top_left_logo() -> None:
     if not os.path.exists(LOGO_IMAGE_PATH):
         return
+    current_view = str(st.session_state.get("dashboard_view", "home")).strip().lower()
+    show_product_of = current_view == "ai_workspace"
     st.markdown(
         """
         <style>
@@ -473,12 +742,355 @@ def render_top_left_logo() -> None:
             max-width: 190px !important;
             height: auto !important;
         }
+        .st-key-top_logo .top-logo-product-of {
+            color: #9ca3af;
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            margin: 0 0 0.16rem 0.16rem;
+            animation: topLogoProductBlink 1.2s ease-in-out infinite;
+        }
+        @keyframes topLogoProductBlink {
+            0% { opacity: 0.38; }
+            50% { opacity: 1; }
+            100% { opacity: 0.38; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
     with st.container(key="top_logo"):
+        if show_product_of:
+            st.markdown('<div class="top-logo-product-of">Product of</div>', unsafe_allow_html=True)
         st.image(LOGO_IMAGE_PATH, width=190)
+
+
+def is_global_music_enabled() -> bool:
+    db_value = get_db_setting_value(ZOSWI_MUSIC_FEATURE_FLAG_KEY)
+    if db_value:
+        return parse_bool(db_value, default=False)
+    config_value = get_config_value(
+        ZOSWI_MUSIC_FEATURE_FLAG_KEY,
+        "music",
+        "enabled",
+        "false",
+    )
+    return parse_bool(config_value, default=False)
+
+
+def get_dashboard_feature_flags() -> dict[str, bool]:
+    flags: dict[str, bool] = {}
+    for view_name, (setting_key, secret_key) in ZOSWI_DASHBOARD_FEATURE_FLAGS.items():
+        db_value = get_db_setting_value(setting_key)
+        if db_value:
+            flags[view_name] = parse_bool(db_value, default=False)
+            continue
+        config_value = get_config_value(
+            setting_key,
+            "features",
+            secret_key,
+            "false",
+        )
+        flags[view_name] = parse_bool(config_value, default=False)
+    return flags
+
+
+def is_dashboard_module_enabled(view_name: str) -> bool:
+    normalized = normalize_dashboard_view(view_name)
+    if not normalized:
+        normalized = str(view_name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if normalized in {"home", "chats", "scores"}:
+        return True
+    return bool(get_dashboard_feature_flags().get(normalized, True))
+
+
+def build_dashboard_module_status_summary() -> str:
+    flags = get_dashboard_feature_flags()
+    labels = (
+        ("Careers", "careers"),
+        ("Live Workspace", "ai_workspace"),
+        ("Immigration Updates", "immigration_updates"),
+        ("AI Coding Room", "coding_room"),
+        ("Live AI Interview", "live_interview"),
+    )
+    return ", ".join(
+        f"{label}: {'enabled' if flags.get(key, False) else 'disabled'}"
+        for label, key in labels
+    )
+
+
+def get_audius_request_headers() -> dict[str, str]:
+    headers = {
+        "User-Agent": "ZoSwi/1.0",
+        "Accept": "application/json",
+    }
+    api_key = get_config_value("AUDIUS_API_KEY", "music", "audius_api_key")
+    if api_key:
+        headers["x-api-key"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+@lru_cache(maxsize=120)
+def search_audius_full_tracks(query: str, limit: int = 8) -> tuple[tuple[str, str], ...]:
+    cleaned_query = re.sub(r"\s+", " ", str(query or "").strip())
+    if len(cleaned_query) < 2:
+        return tuple()
+    safe_limit = max(3, min(15, int(limit or 8)))
+    params = urlencode(
+        {
+            "query": cleaned_query,
+            "limit": safe_limit,
+            "app_name": ZOSWI_AUDIUS_APP_NAME,
+        }
+    )
+    request_url = f"{ZOSWI_AUDIUS_BASE_URL}/v1/tracks/search?{params}"
+    request = Request(request_url, headers=get_audius_request_headers())
+    try:
+        with urlopen(request, timeout=ZOSWI_MUSIC_SEARCH_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return tuple()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return tuple()
+    entries = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(entries, list):
+        return tuple()
+
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        track_id = str(item.get("id", "")).strip()
+        title = str(item.get("title", "")).strip()
+        streamable = item.get("streamable")
+        if streamable is False or not track_id or not title:
+            continue
+        user_obj = item.get("user", {})
+        artist_name = ""
+        if isinstance(user_obj, dict):
+            artist_name = str(user_obj.get("name", "")).strip()
+        title_lower = title.lower()
+        artist_lower = artist_name.lower()
+        label = title if artist_lower and artist_lower in title_lower else f"{title} - {artist_name}" if artist_name else title
+        label = re.sub(r"\s+", " ", label).strip()
+        if not label:
+            continue
+        stream_url = f"{ZOSWI_AUDIUS_BASE_URL}/v1/tracks/{track_id}/stream?app_name={ZOSWI_AUDIUS_APP_NAME}"
+        dedupe_key = f"{label}|{track_id}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        results.append((label[:120], stream_url))
+        if len(results) >= safe_limit:
+            break
+    return tuple(results)
+
+
+@lru_cache(maxsize=120)
+def search_itunes_song_previews(query: str, limit: int = 8) -> tuple[tuple[str, str], ...]:
+    cleaned_query = re.sub(r"\s+", " ", str(query or "").strip())
+    if len(cleaned_query) < 2:
+        return tuple()
+    safe_limit = max(3, min(15, int(limit or 8)))
+    params = urlencode(
+        {
+            "term": cleaned_query,
+            "media": "music",
+            "entity": "song",
+            "limit": safe_limit,
+        }
+    )
+    request_url = f"https://itunes.apple.com/search?{params}"
+    request = Request(
+        request_url,
+        headers={
+            "User-Agent": "ZoSwi/1.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=ZOSWI_MUSIC_SEARCH_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return tuple()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return tuple()
+    entries = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(entries, list):
+        return tuple()
+
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        preview_url = str(item.get("previewUrl", "")).strip()
+        track_name = str(item.get("trackName", "")).strip()
+        artist_name = str(item.get("artistName", "")).strip()
+        if not preview_url or not track_name:
+            continue
+        label = f"{track_name} - {artist_name}" if artist_name else track_name
+        label = re.sub(r"\s+", " ", label).strip()
+        if not label:
+            continue
+        dedupe_key = f"{label}|{preview_url}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        results.append((label[:120], preview_url))
+        if len(results) >= safe_limit:
+            break
+    return tuple(results)
+
+
+def render_global_music_bar() -> None:
+    if not is_global_music_enabled():
+        return
+    if is_mobile_browser():
+        return
+    tracks = [item for item in ZOSWI_GLOBAL_MUSIC_TRACKS if isinstance(item, dict)]
+    if not tracks:
+        return
+    labels = [str(item.get("name", "")).strip() for item in tracks if str(item.get("name", "")).strip()]
+    if not labels:
+        return
+    track_map = {
+        str(item.get("name", "")).strip(): str(item.get("url", "")).strip()
+        for item in tracks
+        if str(item.get("name", "")).strip() and str(item.get("url", "")).strip()
+    }
+    if not track_map:
+        return
+
+    default_track = labels[0]
+    selected_track = str(st.session_state.get("global_music_track", default_track)).strip()
+    if selected_track not in track_map:
+        selected_track = default_track
+    st.session_state.global_music_track = selected_track
+    if "global_music_search_results" not in st.session_state:
+        st.session_state.global_music_search_results = []
+    if "global_music_search_status" not in st.session_state:
+        st.session_state.global_music_search_status = ""
+
+    with st.container(key="global_music_bar"):
+        st.markdown('<div class="zoswi-music-title">ZoSwi Music</div>', unsafe_allow_html=True)
+        with st.container(key="global_music_search_row"):
+            query_col, search_col = st.columns([4.5, 1.5], gap="small")
+            with query_col:
+                with st.container(key="global_music_search_input"):
+                    search_query = st.text_input(
+                        "Search songs",
+                        key="global_music_query",
+                        placeholder="Search songs...",
+                        label_visibility="collapsed",
+                    )
+            with search_col:
+                with st.container(key="global_music_search_btn_wrap"):
+                    search_clicked = st.button(
+                        "Search",
+                        key="global_music_search_btn",
+                        use_container_width=True,
+                    )
+
+        if search_clicked:
+            clean_query = re.sub(r"\s+", " ", str(search_query or "").strip())
+            if len(clean_query) < 2:
+                st.session_state.global_music_search_status = "Enter at least 2 characters to search."
+                st.session_state.global_music_search_results = []
+            else:
+                audius_pairs = list(search_audius_full_tracks(clean_query, limit=10))
+                if audius_pairs:
+                    search_results = [{"name": f"{name} - Full", "url": url} for name, url in audius_pairs]
+                    st.session_state.global_music_search_results = search_results
+                    st.session_state.global_music_track = str(search_results[0]["name"])
+                    st.session_state.global_music_search_status = f"Found {len(search_results)} full tracks."
+                else:
+                    preview_pairs = list(search_itunes_song_previews(clean_query, limit=10))
+                    search_results = [{"name": f"{name} - Preview", "url": url} for name, url in preview_pairs]
+                    st.session_state.global_music_search_results = search_results
+                    if search_results:
+                        st.session_state.global_music_track = str(search_results[0]["name"])
+                        st.session_state.global_music_search_status = (
+                            f"No free full tracks found. Showing {len(search_results)} preview tracks."
+                        )
+                    else:
+                        st.session_state.global_music_search_status = "No tracks found for that search."
+
+        search_results_state = st.session_state.get("global_music_search_results", [])
+        search_tracks = (
+            [item for item in search_results_state if isinstance(item, dict)]
+            if isinstance(search_results_state, list)
+            else []
+        )
+        active_tracks = search_tracks if search_tracks else tracks
+        active_map = {
+            str(item.get("name", "")).strip(): str(item.get("url", "")).strip()
+            for item in active_tracks
+            if str(item.get("name", "")).strip() and str(item.get("url", "")).strip()
+        }
+        if not active_map:
+            active_map = track_map
+        active_labels = list(active_map.keys())
+        selected_active = str(st.session_state.get("global_music_track", active_labels[0])).strip()
+        if selected_active not in active_map:
+            selected_active = active_labels[0]
+            st.session_state.global_music_track = selected_active
+
+        chosen_track = st.selectbox(
+            "Choose music",
+            options=active_labels,
+            key="global_music_track",
+            label_visibility="collapsed",
+        )
+        status_text = str(st.session_state.get("global_music_search_status", "")).strip()
+        if status_text:
+            st.caption(status_text)
+
+        chosen_url = active_map.get(str(chosen_track).strip(), active_map[active_labels[0]])
+        st.audio(chosen_url, format="audio/mp3")
+    st.components.v1.html(
+        """
+        <script>
+        (function () {
+            const hostDoc = (window.parent && window.parent.document) ? window.parent.document : window.document;
+            if (!hostDoc) {
+                return;
+            }
+            function alignMusicBarWithLogo() {
+                const musicWrap = hostDoc.querySelector(".st-key-global_music_bar");
+                if (!musicWrap) {
+                    return;
+                }
+                const logoImg = hostDoc.querySelector(".st-key-top_logo img");
+                const logoWrap = hostDoc.querySelector(".st-key-top_logo");
+                const refRect = logoImg ? logoImg.getBoundingClientRect() : (logoWrap ? logoWrap.getBoundingClientRect() : null);
+                if (!refRect) {
+                    return;
+                }
+                const targetTop = Math.max(8, Math.round(refRect.top + 2));
+                musicWrap.style.top = targetTop + "px";
+            }
+            let ticks = 0;
+            const timer = setInterval(function () {
+                alignMusicBarWithLogo();
+                ticks += 1;
+                if (ticks >= 20) {
+                    clearInterval(timer);
+                }
+            }, 120);
+            alignMusicBarWithLogo();
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -690,6 +1302,50 @@ def init_db() -> None:
         )
         """
     )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS immigration_updates (
+            id {id_pk_sql},
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            source TEXT NOT NULL,
+            link TEXT NOT NULL UNIQUE,
+            visa_category TEXT NOT NULL,
+            published_date TEXT NOT NULL,
+            tags TEXT,
+            original_text TEXT,
+            content_hash TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    music_setting_now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(setting_key) DO NOTHING
+        """,
+        (ZOSWI_MUSIC_FEATURE_FLAG_KEY, "false", music_setting_now_iso, music_setting_now_iso),
+    )
+    conn.execute(
+        """
+        INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(setting_key) DO NOTHING
+        """,
+        ("IMMIGRATION_UPDATES_LAST_FETCH_AT", "", music_setting_now_iso, music_setting_now_iso),
+    )
+    for setting_key, _secret_key in ZOSWI_DASHBOARD_FEATURE_FLAGS.values():
+        conn.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(setting_key) DO NOTHING
+            """,
+            (setting_key, "false", music_setting_now_iso, music_setting_now_iso),
+        )
 
     user_cols = get_table_columns(conn, "users")
     added_email_verified_col = False
@@ -732,6 +1388,28 @@ def init_db() -> None:
     if "source_profile" not in job_search_cols:
         conn.execute("ALTER TABLE job_search_history ADD COLUMN source_profile TEXT")
         conn.execute("UPDATE job_search_history SET source_profile = 'Adzuna' WHERE source_profile IS NULL")
+    immigration_cols = get_table_columns(conn, "immigration_updates")
+    if "summary" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN summary TEXT")
+        conn.execute("UPDATE immigration_updates SET summary = '' WHERE summary IS NULL")
+    if "source" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN source TEXT")
+        conn.execute("UPDATE immigration_updates SET source = 'Unknown Source' WHERE source IS NULL")
+    if "visa_category" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN visa_category TEXT")
+        conn.execute("UPDATE immigration_updates SET visa_category = 'General' WHERE visa_category IS NULL")
+    if "published_date" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN published_date TEXT")
+        conn.execute("UPDATE immigration_updates SET published_date = created_at WHERE published_date IS NULL")
+    if "tags" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN tags TEXT")
+    if "original_text" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN original_text TEXT")
+    if "content_hash" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN content_hash TEXT")
+    if "updated_at" not in immigration_cols:
+        conn.execute("ALTER TABLE immigration_updates ADD COLUMN updated_at TEXT")
+        conn.execute("UPDATE immigration_updates SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_history_user_id ON analysis_history(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_search_history_user_id ON job_search_history(user_id)")
@@ -753,6 +1431,18 @@ def init_db() -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_signup_verification_requests_expires_at ON signup_verification_requests(expires_at)"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_immigration_updates_published_date ON immigration_updates(published_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_immigration_updates_visa_category ON immigration_updates(visa_category)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_immigration_updates_source ON immigration_updates(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_immigration_updates_link ON immigration_updates(link)")
+    if conn.backend == "postgres":
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_immigration_updates_fts
+            ON immigration_updates
+            USING GIN (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(tags,'')))
+            """
+        )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_promo_redemptions_email ON promo_redemptions(email)")
 
@@ -1496,6 +2186,49 @@ def read_password_reset_from_query_params() -> bool:
         return False
 
 
+def normalize_dashboard_view(raw_value: str) -> str:
+    cleaned = str(raw_value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    mapping = {
+        "home": "home",
+        "chats": "chats",
+        "chat": "chats",
+        "scores": "scores",
+        "score": "scores",
+        "ai_workspace": "ai_workspace",
+        "workspace": "ai_workspace",
+        "careers": "careers",
+        "career": "careers",
+        "coding_room": "coding_room",
+        "coding": "coding_room",
+        "codingroom": "coding_room",
+        "live_interview": "live_interview",
+        "interview": "live_interview",
+        "ai_interview": "live_interview",
+        "immigration_updates": "immigration_updates",
+        "immigration": "immigration_updates",
+        "visa_updates": "immigration_updates",
+    }
+    return mapping.get(cleaned, "")
+
+
+def pop_dashboard_view_from_query_params() -> str:
+    raw_value = ""
+    try:
+        for key in ("nav", "view"):
+            value = st.query_params.get(key, "")
+            if isinstance(value, (list, tuple)):
+                value = value[0] if value else ""
+            if str(value or "").strip():
+                raw_value = str(value or "")
+            if key in st.query_params:
+                del st.query_params[key]
+            if raw_value:
+                break
+    except Exception:
+        return ""
+    return normalize_dashboard_view(raw_value)
+
+
 def sync_password_reset_query_param(enabled: bool) -> None:
     try:
         if enabled:
@@ -1508,10 +2241,6 @@ def sync_password_reset_query_param(enabled: bool) -> None:
 
 
 def is_mobile_browser() -> bool:
-    cached = st.session_state.get("_ui_is_mobile")
-    if isinstance(cached, bool):
-        return cached
-
     override_raw = ""
     try:
         override_raw = str(st.query_params.get("mobile", "") or "").strip().lower()
@@ -1523,6 +2252,10 @@ def is_mobile_browser() -> bool:
     if override_raw in {"0", "false", "no", "off"}:
         st.session_state._ui_is_mobile = False
         return False
+
+    cached = st.session_state.get("_ui_is_mobile")
+    if isinstance(cached, bool):
+        return cached
 
     user_agent = ""
     try:
@@ -3055,6 +3788,7 @@ def fetch_usajobs_jobs(
             if isinstance(first_loc, dict):
                 location = str(first_loc.get("LocationName", "")).strip() or location
         job_summary = ""
+        details: dict[str, Any] = {}
         user_area = descriptor.get("UserArea", {}) or {}
         if isinstance(user_area, dict):
             details = user_area.get("Details", {}) or {}
@@ -3096,22 +3830,104 @@ def fetch_usajobs_jobs(
     return jobs, ""
 
 
+def fetch_jooble_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    api_key = get_config_value("JOOBLE_API_KEY", "jobs", "jooble_api_key", "")
+    if not api_key:
+        return (
+            [],
+            "Set JOOBLE_API_KEY in environment/secrets to use Jooble source.",
+        )
+
+    safe_role = " ".join(str(role_query or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching jobs."
+    safe_where = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+
+    request_url = f"https://jooble.org/api/{api_key}"
+    payload = {
+        "keywords": safe_role,
+        "location": safe_where,
+        "page": "1",
+    }
+    request = Request(
+        request_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            raw_payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except HTTPError as ex:
+        return [], f"Jooble API error ({int(ex.code)}). Check Jooble key and retry."
+    except URLError:
+        return [], "Jooble API connection failed. Check network access and retry."
+    except Exception:
+        return [], "Could not parse Jooble API response."
+
+    raw_items = raw_payload.get("jobs", []) if isinstance(raw_payload, dict) else []
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    jobs: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        if not title:
+            continue
+        location = str(item.get("location", "")).strip() or "Location not listed"
+        jobs.append(
+            {
+                "title": strip_html_tags(title),
+                "company": strip_html_tags(str(item.get("company", "")).strip()) or "Unknown company",
+                "location": strip_html_tags(location),
+                "description": strip_html_tags(str(item.get("snippet", "")).strip()),
+                "apply_url": str(item.get("link", "")).strip(),
+                "source": "Jooble",
+                "employment_type": strip_html_tags(str(item.get("type", "")).strip()),
+                "contract_type": strip_html_tags(str(item.get("type", "")).strip()),
+                "posted_at": normalize_posted_at(item.get("updated") or item.get("created") or item.get("posted")),
+            }
+        )
+        if len(jobs) >= limit:
+            break
+    if not jobs:
+        return [], "No Jooble jobs matched the current role/location filter."
+    return jobs, ""
+
+
 def fetch_jobs_from_all_sources(
     role_query: str,
     preferred_location: str,
     max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
 ) -> tuple[list[dict[str, Any]], str]:
     target_count = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
-    provider_count = max(1, len(JOB_SEARCH_PROVIDER_OPTIONS))
-    per_provider_limit = max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(target_count / provider_count) + 2))
-
     safe_role = " ".join(str(role_query or "").split())
     safe_location = " ".join(str(preferred_location or "").split())
     adzuna_app_id = get_config_value("ADZUNA_APP_ID", "jobs", "adzuna_app_id", "")
     adzuna_app_key = get_config_value("ADZUNA_APP_KEY", "jobs", "adzuna_app_key", "")
     adzuna_country = get_config_value("ADZUNA_COUNTRY", "jobs", "adzuna_country", "us").strip().lower() or "us"
+    jooble_api_key = get_config_value("JOOBLE_API_KEY", "jobs", "jooble_api_key", "")
     usajobs_auth_key = get_config_value("USAJOBS_AUTH_KEY", "jobs", "usajobs_auth_key", "")
     usajobs_user_agent = get_config_value("USAJOBS_USER_AGENT", "jobs", "usajobs_user_agent", "")
+    enabled_provider_count = 1
+    if adzuna_app_id and adzuna_app_key:
+        enabled_provider_count += 1
+    if jooble_api_key:
+        enabled_provider_count += 1
+    if usajobs_auth_key and usajobs_user_agent:
+        enabled_provider_count += 1
+    per_provider_limit = max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(target_count / max(1, enabled_provider_count)) + 2))
     cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
 
     cached_jobs, message = _fetch_jobs_from_all_sources_cached(
@@ -3121,6 +3937,7 @@ def fetch_jobs_from_all_sources(
         per_provider_limit=per_provider_limit,
         adzuna_enabled=bool(adzuna_app_id and adzuna_app_key),
         adzuna_country=adzuna_country,
+        jooble_enabled=bool(jooble_api_key),
         usajobs_enabled=bool(usajobs_auth_key and usajobs_user_agent),
         cache_bucket=cache_bucket,
     )
@@ -3135,14 +3952,17 @@ def _fetch_jobs_from_all_sources_cached(
     per_provider_limit: int,
     adzuna_enabled: bool,
     adzuna_country: str,
+    jooble_enabled: bool,
     usajobs_enabled: bool,
     cache_bucket: int,
 ) -> tuple[tuple[dict[str, Any], ...], str]:
-    _ = (adzuna_country, cache_bucket)
+    _ = (adzuna_country, jooble_enabled, cache_bucket)
 
     provider_fetchers: list[tuple[str, Any]] = [("Remotive", fetch_remotive_jobs)]
     if adzuna_enabled:
         provider_fetchers.insert(0, ("Adzuna", fetch_adzuna_jobs))
+    if jooble_enabled:
+        provider_fetchers.append(("Jooble", fetch_jooble_jobs))
     if usajobs_enabled:
         provider_fetchers.append(("USAJobs", fetch_usajobs_jobs))
 
@@ -3276,6 +4096,8 @@ def sanitize_job_search_error_message(message: str) -> str:
     if not raw:
         return ""
     lowered = raw.lower()
+    if "relevance mode:" in lowered:
+        return ""
     source_markers = (
         "some sources were unavailable",
         "remotive:",
@@ -3289,6 +4111,667 @@ def sanitize_job_search_error_message(message: str) -> str:
     if any(marker in lowered for marker in source_markers):
         return "No jobs found for this search. Try broadening role, location, or filters."
     return raw
+
+
+def is_agentive_job_search_request(message: str) -> bool:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return False
+    has_action = any(token in text for token in AGENTIVE_JOB_ACTION_TOKENS)
+    has_object = any(token in text for token in AGENTIVE_JOB_OBJECT_TOKENS)
+    has_work_auth = any(token in text for token in AGENTIVE_WORK_AUTH_TOKENS)
+    return bool((has_action and has_object) or (has_object and has_work_auth))
+
+
+def is_zoswi_capability_request(message: str) -> bool:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return False
+
+    feature_terms = (
+        "coding room",
+        "ai coding room",
+        "ai workspace",
+        "live workspace",
+        "zoswi live workspace",
+        "careers",
+        "career studio",
+        "job match studio",
+        "live ai interview",
+        "ai interview",
+        "interview room",
+        "immigration updates",
+        "visa updates",
+        "resume-jd",
+        "resume jd",
+        "feature",
+        "features",
+        "capability",
+        "capabilities",
+    )
+    if not any(term in text for term in feature_terms):
+        return False
+
+    intent_markers = (
+        "?",
+        "does",
+        "do we have",
+        "have",
+        "available",
+        "what can",
+        "where is",
+        "how to open",
+        "open",
+        "launch",
+        "start",
+        "not up to date",
+        "not working",
+    )
+    if any(marker in text for marker in intent_markers):
+        return True
+    return "zoswi" in text
+
+
+def is_zoswi_builder_request(message: str) -> bool:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return False
+    brand_markers = ("zoswi", "this app", "this assistant", "your app", "you")
+    if not any(marker in text for marker in brand_markers):
+        return False
+    identity_terms = (
+        "built",
+        "created",
+        "made",
+        "developed",
+        "founder",
+        "creator",
+        "builder",
+        "behind",
+        "owner",
+    )
+    if not any(term in text for term in identity_terms):
+        return False
+    return bool(
+        re.search(r"\bwho\b", text)
+        or "built by" in text
+        or "created by" in text
+        or "made by" in text
+        or "who is behind" in text
+    )
+
+
+def build_zoswi_builder_response() -> str:
+    builder_name = get_zoswi_builder_name()
+    if builder_name:
+        return f"ZoSwi was built by {builder_name}."
+    return "ZoSwi was built by the ZoSwi team."
+
+
+def build_zoswi_capability_response(message: str) -> str:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    analysis = st.session_state.get("analysis_result")
+    has_analysis = isinstance(analysis, dict) and bool(analysis)
+    flags = get_dashboard_feature_flags()
+    coding_room_enabled = flags.get("coding_room", False)
+    coding_room_ready = bool(has_analysis) and coding_room_enabled
+    live_workspace_enabled = flags.get("ai_workspace", False)
+    careers_enabled = flags.get("careers", False)
+    live_interview_enabled = flags.get("live_interview", False)
+    immigration_updates_enabled = flags.get("immigration_updates", False)
+
+    if "coding room" in text or "ai coding room" in text:
+        if not coding_room_enabled:
+            return "AI Coding Room is currently disabled."
+        if coding_room_ready:
+            return (
+                "Yes. ZoSwi has AI Coding Room and it is available now. "
+                "Open Home and click Start 3-Stage AI Coding Room."
+            )
+        return (
+            "Yes. ZoSwi has AI Coding Room. "
+            "Run Home Resume-JD analysis once, then Start 3-Stage AI Coding Room will unlock."
+        )
+
+    if "ai workspace" in text or "live workspace" in text:
+        if not live_workspace_enabled:
+            return f"{ZOSWI_LIVE_WORKSPACE_NAME} is currently disabled."
+        return (
+            f"Yes. {ZOSWI_LIVE_WORKSPACE_NAME} is available. "
+            "It supports real-time chat, file understanding, image analysis, and image generation."
+        )
+
+    if "careers" in text or "job match studio" in text:
+        if not careers_enabled:
+            return "ZoSwi Careers is currently disabled."
+        return (
+            "Yes. ZoSwi Careers is available. "
+            "Use Career Match Studio to fetch live jobs and rank by resume fit, location, visa, sponsorship, and posted date."
+        )
+
+    if "interview" in text:
+        if not live_interview_enabled:
+            return "Live AI Interview is currently disabled."
+        return (
+            "Yes. Live AI Interview is available. "
+            "Open Live AI Interview to launch a guided mock interview session."
+        )
+
+    if "immigration" in text or "visa updates" in text:
+        if not immigration_updates_enabled:
+            return "Immigration Updates is currently disabled."
+        return (
+            "Yes. Immigration Updates is available. "
+            "Use it to review curated visa and immigration updates."
+        )
+
+    enabled_modules: list[str] = []
+    if careers_enabled:
+        enabled_modules.append("Careers")
+    if live_workspace_enabled:
+        enabled_modules.append(ZOSWI_LIVE_WORKSPACE_NAME)
+    if coding_room_enabled:
+        enabled_modules.append("AI Coding Room")
+    if live_interview_enabled:
+        enabled_modules.append("Live AI Interview")
+    if immigration_updates_enabled:
+        enabled_modules.append("Immigration Updates")
+
+    modules_line = ", ".join(enabled_modules) if enabled_modules else "none"
+    if not coding_room_enabled:
+        coding_status = "disabled"
+    elif coding_room_ready:
+        coding_status = "ready now"
+    else:
+        coding_status = "enabled (unlocks after Resume-JD analysis)"
+    return (
+        f"Enabled ZoSwi modules: {modules_line}. "
+        f"Coding Room status: {coding_status}."
+    )
+
+
+def _clean_agentive_role_text(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip(" ,.;:-")
+    cleaned = re.sub(r"(?i)^(?:find|search|show|get|list|recommend|match|shortlist)\s+(?:me\s+)?", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^(?:top\s+)?\d{1,2}\s+", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)\b(?:jobs?|roles?|openings?|positions?)\b$", "", cleaned).strip(" ,.;:-")
+    cleaned = re.sub(r"[^a-zA-Z0-9/+\-&\s]", "", cleaned).strip()
+    if cleaned.lower() in {"me", "my", "the", "a", "an", "all", "any"}:
+        return ""
+    return cleaned[:90]
+
+
+def _extract_requested_role_query(message: str, fallback_role: str) -> str:
+    text = re.sub(r"\s+", " ", str(message or "").strip())
+    if not text:
+        return str(fallback_role or "").strip()
+
+    patterns = (
+        r"(?i)\b(?:jobs?|roles?|openings?|positions?)\s+(?:for|as)\s+([a-z0-9][a-z0-9\s/&+\-]{1,90})",
+        r"(?i)\b(?:find|search|show|get|list|recommend|match|shortlist)\s+(?:me\s+)?(?:jobs?|roles?|openings?|positions?)\s*(?:for|as)?\s*([a-z0-9][a-z0-9\s/&+\-]{1,90})",
+        r"(?i)\bfor\s+([a-z0-9][a-z0-9\s/&+\-]{1,90})\s+(?:jobs?|roles?|openings?|positions?)\b",
+        r"(?i)\b([a-z][a-z0-9\s/&+\-]{2,80})\s+(?:jobs?|roles?|openings?)\b",
+    )
+    split_pattern = r"(?i)\b(?:in|at|near|around|with|that|who|posted|within|last|past|for|requiring)\b"
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        candidate = re.split(split_pattern, str(match.group(1) or ""), maxsplit=1)[0]
+        cleaned = _clean_agentive_role_text(candidate)
+        if cleaned and cleaned.lower() not in AGENTIVE_JOB_ACTION_TOKENS:
+            return cleaned
+    return str(fallback_role or "").strip()
+
+
+def _extract_requested_location(message: str, fallback_location: str) -> str:
+    text = re.sub(r"\s+", " ", str(message or "").strip())
+    lowered = text.lower()
+    if re.search(r"\bremote\b", lowered):
+        return "Remote"
+
+    location_patterns = (
+        r"(?i)\b(?:in|at|near|around)\s+([a-z][a-z0-9,\-\s]{2,80})",
+    )
+    split_pattern = (
+        r"(?i)\b(?:with|for|who|that|posted|within|last|past|sponsorship|visa|h1b|full[- ]time|contract|w2|c2c)\b"
+    )
+    for pattern in location_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        candidate = re.split(split_pattern, str(match.group(1) or ""), maxsplit=1)[0]
+        cleaned = re.sub(r"\s+", " ", candidate).strip(" ,.;:-")[:90]
+        if cleaned:
+            return cleaned
+    return str(fallback_location or "").strip()
+
+
+def _extract_requested_position_types(message: str, fallback_types: list[str]) -> list[str]:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return [item for item in (fallback_types or []) if item in JOB_POSITION_FILTER_OPTIONS]
+    if any(token in text for token in ("all types", "any type", "all positions", "any position", "all roles")):
+        return []
+
+    selected: list[str] = []
+    if any(token in text for token in ("full-time", "full time", "permanent")):
+        selected.append("Full-Time")
+    if "contract" in text or "contractor" in text:
+        selected.append("Contract")
+    if any(token in text for token in ("w2", "w-2", "w 2")):
+        selected.append("W2")
+    if any(token in text for token in ("c2c", "corp to corp", "corp-to-corp", "1099")):
+        selected.append("C2C")
+    if any(token in text for token in ("part-time", "part time")):
+        selected.append("Part-Time")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in selected:
+        if item in JOB_POSITION_FILTER_OPTIONS and item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    if deduped:
+        return deduped
+    return [item for item in (fallback_types or []) if item in JOB_POSITION_FILTER_OPTIONS]
+
+
+def _extract_requested_posted_within_days(message: str, fallback_days: int) -> int:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return max(0, int(fallback_days or 0))
+    if any(token in text for token in ("anytime", "any time", "all dates", "all postings")):
+        return 0
+    if any(token in text for token in ("today", "24 hour", "24 hours", "1 day")):
+        return 1
+    if any(token in text for token in ("3 day", "3 days")):
+        return 3
+    if any(token in text for token in ("7 day", "7 days", "1 week", "one week")):
+        return 7
+    if any(token in text for token in ("14 day", "14 days", "2 week", "two week")):
+        return 14
+    if any(token in text for token in ("30 day", "30 days", "1 month", "one month")):
+        return 30
+
+    day_match = re.search(r"(?i)\b(?:past|last|within)\s*(\d{1,2})\s*days?\b", text)
+    if day_match:
+        requested = max(0, int(day_match.group(1)))
+        for option in (1, 3, 7, 14, 30):
+            if requested <= option:
+                return option
+        return 30
+    week_match = re.search(r"(?i)\b(?:past|last|within)\s*(\d{1,2})\s*weeks?\b", text)
+    if week_match:
+        weeks = max(0, int(week_match.group(1)))
+        days = weeks * 7
+        for option in (1, 3, 7, 14, 30):
+            if days <= option:
+                return option
+        return 30
+    return max(0, int(fallback_days or 0))
+
+
+def _extract_requested_max_results(message: str, fallback_max_results: int) -> int:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(fallback_max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    if any(token in text for token in ("all jobs", "all roles", "all results")):
+        return JOB_SEARCH_MAX_RESULTS_LIMIT
+
+    patterns = (
+        r"(?i)\b(?:top|show|list|give|find|max(?:imum)?)\s*(\d{1,2})\s*(?:jobs?|roles?|results?)?\b",
+        r"(?i)\b(\d{1,2})\s*(?:jobs?|roles?|results?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = int(match.group(1))
+        return max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, value))
+    return max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(fallback_max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+
+
+def _extract_requested_visa_and_sponsorship(
+    message: str,
+    fallback_visa_status: str,
+    fallback_sponsorship_required: bool,
+) -> tuple[str, bool]:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    visa_status = str(fallback_visa_status or JOB_SEARCH_VISA_STATUSES[0]).strip() or JOB_SEARCH_VISA_STATUSES[0]
+    sponsorship_required = bool(fallback_sponsorship_required)
+
+    if any(token in text for token in ("citizen", "green card", "gc holder", "us citizen")):
+        visa_status = "US Citizen / Green Card"
+    elif any(token in text for token in ("h1b", "h-1b", "h 1b")):
+        visa_status = "H-1B"
+    elif any(token in text for token in ("opt", "cpt", "f1", "f-1")):
+        visa_status = "F-1 OPT / CPT"
+    elif any(token in text for token in ("l1", "l-1", "l 1")):
+        visa_status = "L-1"
+    elif re.search(r"(?i)\btn\b", text):
+        visa_status = "TN"
+
+    no_sponsorship_markers = (
+        "no sponsorship",
+        "without sponsorship",
+        "sponsorship not required",
+        "dont need sponsorship",
+        "do not need sponsorship",
+    )
+    sponsorship_markers = (
+        "sponsorship",
+        "h1b",
+        "h-1b",
+        "visa support",
+        "need visa",
+        "opt",
+        "cpt",
+    )
+    if any(marker in text for marker in no_sponsorship_markers):
+        sponsorship_required = False
+    elif any(marker in text for marker in sponsorship_markers):
+        sponsorship_required = True
+
+    return visa_status, sponsorship_required
+
+
+def build_agentive_job_search_filters(
+    message: str,
+    fallback_filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    defaults = fallback_filters or {}
+    fallback_role = str(defaults.get("role_query", "")).strip()
+    fallback_location = str(defaults.get("preferred_location", "")).strip()
+    fallback_visa = str(defaults.get("visa_status", JOB_SEARCH_VISA_STATUSES[0])).strip() or JOB_SEARCH_VISA_STATUSES[0]
+    fallback_sponsorship = bool(defaults.get("sponsorship_required", False))
+    raw_fallback_types = defaults.get("selected_position_types", [])
+    fallback_types = (
+        [str(item).strip() for item in raw_fallback_types if str(item).strip()]
+        if isinstance(raw_fallback_types, list)
+        else []
+    )
+    fallback_posted_days = int(defaults.get("posted_within_days", 0) or 0)
+    fallback_max_results = int(defaults.get("max_results", JOB_SEARCH_MAX_RESULTS_DEFAULT) or JOB_SEARCH_MAX_RESULTS_DEFAULT)
+
+    role_query = _extract_requested_role_query(message, fallback_role)
+    preferred_location = _extract_requested_location(message, fallback_location)
+    selected_position_types = _extract_requested_position_types(message, fallback_types)
+    posted_within_days = _extract_requested_posted_within_days(message, fallback_posted_days)
+    max_results = _extract_requested_max_results(message, fallback_max_results)
+    visa_status, sponsorship_required = _extract_requested_visa_and_sponsorship(
+        message,
+        fallback_visa_status=fallback_visa,
+        fallback_sponsorship_required=fallback_sponsorship,
+    )
+
+    return {
+        "role_query": role_query,
+        "preferred_location": preferred_location,
+        "visa_status": visa_status,
+        "sponsorship_required": sponsorship_required,
+        "selected_position_types": selected_position_types,
+        "posted_within_days": posted_within_days,
+        "max_results": max_results,
+    }
+
+
+def apply_agentive_job_filters_to_state(filters: dict[str, Any]) -> None:
+    st.session_state.job_search_role_query = str(filters.get("role_query", "")).strip()
+    st.session_state.job_search_preferred_location = str(filters.get("preferred_location", "")).strip()
+    st.session_state.job_search_visa_status = str(filters.get("visa_status", JOB_SEARCH_VISA_STATUSES[0])).strip()
+    st.session_state.job_search_sponsorship_required = bool(filters.get("sponsorship_required", False))
+    raw_types = filters.get("selected_position_types", [])
+    cleaned_types = [str(item).strip() for item in raw_types if str(item).strip()] if isinstance(raw_types, list) else []
+    st.session_state.job_search_position_types = [item for item in cleaned_types if item in JOB_POSITION_FILTER_OPTIONS]
+    st.session_state.job_search_posted_within_days = int(filters.get("posted_within_days", 0) or 0)
+    st.session_state.job_search_max_results = int(filters.get("max_results", JOB_SEARCH_MAX_RESULTS_DEFAULT) or JOB_SEARCH_MAX_RESULTS_DEFAULT)
+
+
+def run_agentive_job_search_pipeline(
+    resume_text: str,
+    target_job_description: str,
+    role_query: str,
+    preferred_location: str,
+    visa_status: str,
+    sponsorship_required: bool,
+    selected_position_types: list[str],
+    posted_within_days: int,
+    max_results: int,
+) -> dict[str, Any]:
+    safe_resume = str(resume_text or "").strip()
+    safe_role = re.sub(r"\s+", " ", str(role_query or "").strip())
+    safe_location = re.sub(r"\s+", " ", str(preferred_location or "").strip())
+    safe_visa_status = str(visa_status or "").strip() or JOB_SEARCH_VISA_STATUSES[0]
+    safe_target_jd = str(target_job_description or "").strip()
+    safe_types = [
+        str(item).strip()
+        for item in (selected_position_types or [])
+        if str(item).strip() in JOB_POSITION_FILTER_OPTIONS
+    ]
+    safe_posted_days = max(0, int(posted_within_days or 0))
+    safe_limit = max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+
+    filters = {
+        "role_query": safe_role,
+        "preferred_location": safe_location,
+        "visa_status": safe_visa_status,
+        "sponsorship_required": bool(sponsorship_required),
+        "selected_position_types": safe_types,
+        "posted_within_days": safe_posted_days,
+        "max_results": safe_limit,
+    }
+    trace: list[str] = []
+
+    if not safe_resume:
+        return {
+            "ok": False,
+            "results": [],
+            "error": "Upload or prepare your resume first so ZoSwi can rank jobs by fit.",
+            "filters": filters,
+            "trace": trace,
+        }
+    if not safe_role:
+        return {
+            "ok": False,
+            "results": [],
+            "error": "Share a target role (for example: Data Engineer) so ZoSwi can run job matching.",
+            "filters": filters,
+            "trace": trace,
+        }
+
+    trace.append("Planned fetch -> date filter -> position filter -> resume + visa ranking.")
+    jobs, fetch_msg = fetch_jobs_from_all_sources(
+        role_query=safe_role,
+        preferred_location=safe_location,
+        max_results=safe_limit,
+    )
+    if not jobs:
+        return {
+            "ok": False,
+            "results": [],
+            "error": sanitize_job_search_error_message(fetch_msg or "No jobs found for this search."),
+            "filters": filters,
+            "trace": trace,
+        }
+
+    trace.append(f"Fetched {len(jobs)} jobs from active providers.")
+    date_filtered_jobs, posted_msg = filter_jobs_by_posted_within(jobs, safe_posted_days)
+    if not date_filtered_jobs:
+        combined_error = " ".join(part for part in [fetch_msg, posted_msg] if str(part).strip())
+        return {
+            "ok": False,
+            "results": [],
+            "error": sanitize_job_search_error_message(combined_error or "No jobs matched selected filters."),
+            "filters": filters,
+            "trace": trace,
+        }
+
+    trace.append(f"{len(date_filtered_jobs)} jobs remained after posted-date filter.")
+    filtered_jobs, position_msg = filter_jobs_by_position_types(date_filtered_jobs, safe_types)
+    if not filtered_jobs:
+        combined_error = " ".join(part for part in [fetch_msg, posted_msg, position_msg] if str(part).strip())
+        return {
+            "ok": False,
+            "results": [],
+            "error": sanitize_job_search_error_message(combined_error or "No jobs matched selected filters."),
+            "filters": filters,
+            "trace": trace,
+        }
+
+    trace.append(f"{len(filtered_jobs)} jobs remained after position-type filter.")
+    ranked = rank_jobs_for_candidate(
+        resume_text=safe_resume,
+        raw_jobs=filtered_jobs,
+        preferred_location=safe_location,
+        visa_status=safe_visa_status,
+        sponsorship_required=bool(sponsorship_required),
+        target_job_context=safe_target_jd,
+    )
+    relevance_filtered, relevance_message = filter_ranked_jobs_by_relevance(
+        ranked_jobs=[dict(item) for item in (ranked or []) if isinstance(item, dict)],
+        role_query=safe_role,
+        max_results=safe_limit,
+    )
+    ranked_results = relevance_filtered[:safe_limit]
+    if not ranked_results:
+        return {
+            "ok": False,
+            "results": [],
+            "error": "ZoSwi could not find strong resume-aligned matches. Refine role keywords or widen location.",
+            "filters": filters,
+            "trace": trace,
+        }
+
+    trace.append(f"Ranked {len(ranked_results)} jobs by resume fit + location + sponsorship signal.")
+    if str(relevance_message).strip():
+        trace.append(str(relevance_message).strip())
+    info_message = sanitize_job_search_error_message(
+        " ".join(part for part in [fetch_msg, posted_msg, position_msg] if str(part).strip())
+    )
+    return {
+        "ok": True,
+        "results": ranked_results,
+        "error": info_message,
+        "filters": filters,
+        "trace": trace,
+    }
+
+
+def format_agentive_job_search_response(search_result: dict[str, Any]) -> str:
+    if not bool(search_result.get("ok")):
+        return str(search_result.get("error", "No jobs found for this search.")).strip()
+
+    filters = search_result.get("filters", {})
+    if not isinstance(filters, dict):
+        filters = {}
+    results = search_result.get("results", [])
+    if not isinstance(results, list):
+        results = []
+
+    role_query = str(filters.get("role_query", "")).strip() or "Not specified"
+    preferred_location = str(filters.get("preferred_location", "")).strip() or "Any"
+    visa_status = str(filters.get("visa_status", "")).strip() or "Not specified"
+    sponsorship_required = bool(filters.get("sponsorship_required", False))
+    posted_days = int(filters.get("posted_within_days", 0) or 0)
+    posted_label = get_posted_within_label(posted_days)
+    position_types = filters.get("selected_position_types", [])
+    if not isinstance(position_types, list):
+        position_types = []
+    position_label = ", ".join(str(item).strip() for item in position_types if str(item).strip()) or "All"
+    sponsorship_label = "Yes" if sponsorship_required else "No"
+
+    lines: list[str] = []
+    lines.append("ZoSwi agentive job match is ready.")
+    lines.append(
+        f"Filters used: Role={role_query} | Location={preferred_location} | Visa={visa_status} | "
+        f"Sponsorship required={sponsorship_label} | Posted={posted_label} | Position types={position_label}"
+    )
+    lines.append("")
+    lines.append("Top matches:")
+    for idx, item in enumerate(results[:5], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip() or "Untitled role"
+        company = str(item.get("company", "")).strip() or "Unknown company"
+        location = str(item.get("location", "")).strip() or "Location not listed"
+        posted = format_posted_age(str(item.get("posted_at", "")).strip())
+        score = int(item.get("overall_score", 0) or 0)
+        sponsorship = str(item.get("sponsorship_status", "")).strip() or "Unknown"
+        apply_url = str(item.get("apply_url", "")).strip()
+        lines.append(
+            f"{idx}. {title} | {company} | {location} | {posted} | Readiness {score}% | Sponsorship {sponsorship}"
+        )
+        if apply_url:
+            lines.append(f"Apply: {apply_url}")
+        else:
+            lines.append("Apply: URL not listed.")
+        missing_points = item.get("missing_points", [])
+        if isinstance(missing_points, list) and missing_points:
+            first_point = str(missing_points[0]).strip()
+            if first_point:
+                lines.append(f"Resume boost: {first_point}")
+
+    info_message = str(search_result.get("error", "")).strip()
+    if info_message:
+        lines.append("")
+        lines.append(f"Note: {info_message}")
+    lines.append("")
+    lines.append("Next move: apply to the top 3 matches first, then iterate based on callback quality.")
+    return "\n".join(lines).strip()
+
+
+def run_agentive_job_search_from_message(message: str, source_profile: str) -> tuple[bool, str]:
+    default_filters = {
+        "role_query": str(st.session_state.get("job_search_role_query", "")).strip(),
+        "preferred_location": str(st.session_state.get("job_search_preferred_location", "")).strip(),
+        "visa_status": str(st.session_state.get("job_search_visa_status", JOB_SEARCH_VISA_STATUSES[0])).strip(),
+        "sponsorship_required": bool(st.session_state.get("job_search_sponsorship_required", False)),
+        "selected_position_types": st.session_state.get("job_search_position_types", []),
+        "posted_within_days": int(st.session_state.get("job_search_posted_within_days", 0) or 0),
+        "max_results": int(st.session_state.get("job_search_max_results", JOB_SEARCH_MAX_RESULTS_DEFAULT) or JOB_SEARCH_MAX_RESULTS_DEFAULT),
+    }
+    filters = build_agentive_job_search_filters(message, default_filters)
+    apply_agentive_job_filters_to_state(filters)
+    resume_text, target_job_description = get_active_careers_profile_context()
+    search_result = run_agentive_job_search_pipeline(
+        resume_text=resume_text,
+        target_job_description=target_job_description,
+        role_query=str(filters.get("role_query", "")),
+        preferred_location=str(filters.get("preferred_location", "")),
+        visa_status=str(filters.get("visa_status", JOB_SEARCH_VISA_STATUSES[0])),
+        sponsorship_required=bool(filters.get("sponsorship_required", False)),
+        selected_position_types=filters.get("selected_position_types", []),
+        posted_within_days=int(filters.get("posted_within_days", 0) or 0),
+        max_results=int(filters.get("max_results", JOB_SEARCH_MAX_RESULTS_DEFAULT) or JOB_SEARCH_MAX_RESULTS_DEFAULT),
+    )
+
+    ok = bool(search_result.get("ok"))
+    results = search_result.get("results", [])
+    if not isinstance(results, list):
+        results = []
+    st.session_state.job_search_results = results if ok else []
+    st.session_state.job_search_last_error = sanitize_job_search_error_message(str(search_result.get("error", "")).strip())
+
+    if ok:
+        user = st.session_state.get("user") or {}
+        user_id = int(user.get("id") or 0)
+        if user_id > 0:
+            try:
+                save_job_search_history(
+                    user_id=user_id,
+                    source_profile=str(source_profile or "").strip()[:40] or "ZoSwi Agentive",
+                    role_query=str(filters.get("role_query", "")),
+                    preferred_location=str(filters.get("preferred_location", "")),
+                    visa_status=str(filters.get("visa_status", "")),
+                    sponsorship_required=bool(filters.get("sponsorship_required", False)),
+                    results=results,
+                )
+            except Exception:
+                pass
+
+    response_text = format_agentive_job_search_response(search_result)
+    return ok, sanitize_zoswi_response_text(response_text)
 
 
 def build_application_confidence_snapshot(
@@ -3330,11 +4813,16 @@ def build_application_confidence_snapshot(
         summary = "Good readiness. Tighten filters and resume alignment for better outcomes."
     else:
         band = "Build-Up"
-        summary = "Add role-specific details and refine filters before mass applying."
+        summary = "Strengthen your resume with measurable achievements and ATS keywords before broad applying."
 
     next_steps: list[str] = []
+    if has_resume:
+        next_steps.append("Add 2-3 impact bullets with metrics (time saved, revenue, or efficiency gains).")
+        next_steps.append("Mirror top role keywords in your resume headline, summary, and skills section.")
+    else:
+        next_steps.append("Upload your latest resume to unlock tailored scoring and stronger recommendations.")
     if not has_role:
-        next_steps.append("Set a precise target role.")
+        next_steps.append("Set a precise target role and align resume title to the same role.")
     if not has_location:
         next_steps.append("Set a preferred location or Remote.")
     if not has_position_type:
@@ -3348,7 +4836,7 @@ def build_application_confidence_snapshot(
         "score": confidence,
         "band": band,
         "summary": summary,
-        "next_steps": next_steps[:2],
+        "next_steps": next_steps[:3],
         "analysis_score": analysis_score,
     }
 
@@ -3530,12 +5018,67 @@ def score_location_fit(preferred_location: str, job_location: str) -> tuple[int,
     return 4, "Job location differs from your preferred location."
 
 
+def estimate_role_relevance(role_query: str, title: str, description: str) -> int:
+    query = re.sub(r"\s+", " ", str(role_query or "").strip().lower())
+    if not query:
+        return 50
+    text = " ".join([str(title or "").lower(), str(description or "").lower()])
+    if not text.strip():
+        return 0
+    if query in text:
+        return 100
+    tokens = [tok for tok in re.findall(r"[a-zA-Z0-9+#.\-]{3,}", query) if tok]
+    if not tokens:
+        return 50
+    matched = sum(1 for tok in tokens if tok in text)
+    base = int(round((matched / max(1, len(tokens))) * 100))
+    # Slight boost when at least one meaningful role token appears in title itself.
+    title_lower = str(title or "").lower()
+    if any(tok in title_lower for tok in tokens):
+        base = min(100, base + 10)
+    return max(0, min(100, base))
+
+
+def filter_ranked_jobs_by_relevance(
+    ranked_jobs: list[dict[str, Any]],
+    role_query: str,
+    max_results: int,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_jobs = [dict(item) for item in ranked_jobs if isinstance(item, dict)]
+    if not safe_jobs:
+        return [], ""
+
+    for job in safe_jobs:
+        role_relevance = estimate_role_relevance(
+            role_query=role_query,
+            title=str(job.get("title", "")).strip(),
+            description=str(job.get("job_text_for_relevance", "")).strip(),
+        )
+        job["role_relevance"] = role_relevance
+
+    strict: list[dict[str, Any]] = []
+    relaxed: list[dict[str, Any]] = []
+    for job in safe_jobs:
+        resume_score = int(job.get("resume_match_score", 0) or 0)
+        role_score = int(job.get("role_relevance", 0) or 0)
+        if resume_score >= JOB_SEARCH_MIN_RESUME_MATCH_STRICT and role_score >= JOB_SEARCH_MIN_ROLE_RELEVANCE_STRICT:
+            strict.append(job)
+        if resume_score >= JOB_SEARCH_MIN_RESUME_MATCH_RELAXED and role_score >= JOB_SEARCH_MIN_ROLE_RELEVANCE_RELAXED:
+            relaxed.append(job)
+
+    if len(strict) >= max(2, min(4, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT))):
+        return strict, ""
+    if relaxed:
+        return relaxed, ""
+    return safe_jobs, ""
+
+
 def get_resume_job_match_score(resume_text: str, job_description: str, allow_ai: bool = True) -> tuple[int, str]:
     jd = str(job_description or "").strip()
     if not jd:
         return 0, "Job description text was unavailable for resume matching."
 
-    use_ai = bool(allow_ai and get_openai_key())
+    use_ai = bool(allow_ai and get_zoswiai_key())
     if use_ai:
         try:
             result = analyze_resume_with_ai(resume_text, jd)
@@ -3549,6 +5092,119 @@ def get_resume_job_match_score(resume_text: str, job_description: str, allow_ai:
     score = max(0, min(100, int(fallback.get("score", 0))))
     summary = str(fallback.get("summary", "")).strip()
     return score, summary or "Heuristic resume-to-job match score calculated."
+
+
+def extract_resume_keyword_gaps(resume_text: str, job_text: str, limit: int = 5) -> list[str]:
+    resume_lower = str(resume_text or "").lower()
+    job_lower = str(job_text or "").lower()
+    if not resume_lower or not job_lower:
+        return []
+
+    token_pattern = re.compile(r"[a-zA-Z][a-zA-Z0-9+#.\-]{2,}")
+    resume_tokens = set(token_pattern.findall(resume_lower))
+    job_tokens = token_pattern.findall(job_lower)
+    if not job_tokens:
+        return []
+
+    stop_words = {
+        "with",
+        "from",
+        "that",
+        "this",
+        "will",
+        "must",
+        "have",
+        "work",
+        "team",
+        "role",
+        "jobs",
+        "using",
+        "years",
+        "year",
+        "experience",
+        "strong",
+        "ability",
+        "skills",
+        "knowledge",
+        "required",
+        "preferred",
+        "build",
+        "design",
+        "develop",
+        "engineer",
+        "engineering",
+        "software",
+    }
+
+    freq: dict[str, int] = {}
+    for token in job_tokens:
+        clean = token.lower().strip(".-")
+        if not clean or clean in stop_words:
+            continue
+        if clean in resume_tokens:
+            continue
+        if len(clean) < 4:
+            continue
+        if clean.isdigit():
+            continue
+        freq[clean] = freq.get(clean, 0) + 1
+
+    ranked = sorted(freq.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))
+    return [token for token, _ in ranked[: max(1, int(limit or 1))]]
+
+
+def build_resume_missing_points(
+    resume_text: str,
+    job_row: dict[str, Any],
+    target_job_context: str = "",
+    limit: int = 3,
+) -> list[str]:
+    safe_resume = str(resume_text or "").strip()
+    if not safe_resume:
+        return ["Upload your latest resume to generate tailored missing points before applying."]
+
+    description = str(job_row.get("description", "")).strip()
+    title = str(job_row.get("title", "")).strip()
+    company = str(job_row.get("company", "")).strip()
+    job_text = "\n".join(
+        part for part in [title, company, description, str(target_job_context or "").strip()] if str(part).strip()
+    )
+
+    points: list[str] = []
+    missing_keywords = extract_resume_keyword_gaps(safe_resume, job_text, limit=4)
+    if missing_keywords:
+        points.append(
+            "Add these relevant keywords where accurate: " + ", ".join(missing_keywords[:4]) + "."
+        )
+
+    top_skills = extract_top_technical_skills(safe_resume, job_text, limit=6)
+    missing_skills: list[str] = []
+    resume_lower = safe_resume.lower()
+    for skill in top_skills:
+        if str(skill).lower() not in resume_lower:
+            missing_skills.append(str(skill))
+    if missing_skills:
+        points.append(
+            "If you used them, add evidence for: " + ", ".join(missing_skills[:3]) + " in Projects/Experience."
+        )
+
+    if not re.search(r"\d", safe_resume):
+        points.append("Add 2 measurable bullets with numbers (impact, %, time saved, revenue, scale).")
+    else:
+        points.append("Strengthen 1-2 bullets with clearer business impact and ownership.")
+
+    normalized_points: list[str] = []
+    seen: set[str] = set()
+    for item in points:
+        clean = re.sub(r"\s+", " ", str(item).strip())
+        if not clean:
+            continue
+        lower = clean.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        normalized_points.append(clean)
+    return normalized_points[: max(1, int(limit or 1))]
 
 
 def evaluate_job_lead_for_candidate(
@@ -3600,6 +5256,12 @@ def evaluate_job_lead_for_candidate(
         f"{location_note} {sponsorship_note} Visa profile: {visa_profile}. "
         f"Resume fit: {resume_summary[:180]}"
     ).strip()
+    missing_points = build_resume_missing_points(
+        resume_text=resume_text,
+        job_row=job_row,
+        target_job_context=target_context,
+        limit=3,
+    )
 
     return {
         "title": title or "Untitled role",
@@ -3614,6 +5276,8 @@ def evaluate_job_lead_for_candidate(
         "overall_score": overall_score,
         "position_tags": position_tags,
         "reason": readiness_reason[:360],
+        "missing_points": missing_points,
+        "job_text_for_relevance": (description or combined_text)[:1200],
     }
 
 
@@ -3630,7 +5294,7 @@ def rank_jobs_for_candidate(
         return []
 
     ai_indices: set[int] = set()
-    if bool(get_openai_key()):
+    if bool(get_zoswiai_key()):
         ai_limit = max(1, min(JOB_SEARCH_MAX_AI_EVALUATIONS, JOB_SEARCH_MAX_RESULTS_LIMIT))
         if len(valid_jobs) <= ai_limit:
             ai_indices = set(range(len(valid_jobs)))
@@ -4053,6 +5717,61 @@ def normalize_image_tool_size(raw_size: str) -> str:
     return IMAGE_TOOL_GENERATE_SIZES[0]
 
 
+def apply_zoswi_watermark_to_image(image_bytes: bytes) -> bytes:
+    if not image_bytes:
+        return image_bytes
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return image_bytes
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source_img:
+            output_format = str(source_img.format or "PNG").upper()
+            base = source_img.convert("RGBA")
+            width, height = base.size
+            if width < 64 or height < 64:
+                return image_bytes
+
+            padding = max(10, min(width, height) // 45)
+            font_size = max(14, min(width, height) // 28)
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+
+            label = "ZoSwi"
+            measure = ImageDraw.Draw(base)
+            if hasattr(measure, "textbbox"):
+                bbox = measure.textbbox((0, 0), label, font=font)
+                text_w = max(1, bbox[2] - bbox[0])
+                text_h = max(1, bbox[3] - bbox[1])
+            else:
+                legacy_w, legacy_h = measure.textsize(label, font=font)
+                text_w = max(1, int(legacy_w))
+                text_h = max(1, int(legacy_h))
+
+            text_x = max(padding, width - text_w - padding)
+            text_y = max(padding, height - text_h - padding)
+
+            overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            draw.text((text_x + 1, text_y + 1), label, font=font, fill=(2, 6, 23, 78))
+            draw.text((text_x, text_y), label, font=font, fill=(248, 250, 252, 114))
+            composed = Image.alpha_composite(base, overlay)
+
+            output = io.BytesIO()
+            if output_format in {"JPEG", "JPG"}:
+                composed.convert("RGB").save(output, format="JPEG", quality=94, optimize=True)
+            elif output_format == "WEBP":
+                composed.save(output, format="WEBP", quality=94)
+            else:
+                composed.save(output, format="PNG")
+            return output.getvalue()
+    except Exception:
+        return image_bytes
+
+
 def convert_image_bytes_to_format(
     image_bytes: bytes,
     target_format: str,
@@ -4103,7 +5822,7 @@ def convert_image_bytes_to_format(
     return True, output_buffer.getvalue(), mime_by_format[normalized_format], ext_by_format[normalized_format]
 
 
-def generate_image_with_openai(
+def generate_image_with_zoswiai(
     prompt: str,
     size: str,
     style_name: str,
@@ -4112,9 +5831,9 @@ def generate_image_with_openai(
     if len(clean_prompt) < 8:
         return False, b"", "Add a clearer prompt (at least 8 characters)."
 
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
-        return False, b"", "OPENAI_API_KEY is required for image creation."
+        return False, b"", "ZOSWI_AI_API_KEY is required for image creation."
 
     normalized_size = normalize_image_tool_size(size)
     style_note = IMAGE_TOOL_STYLE_NOTES.get(str(style_name or "").strip(), IMAGE_TOOL_STYLE_NOTES["Professional"])
@@ -4125,7 +5844,7 @@ def generate_image_with_openai(
     )
 
     try:
-        client = OpenAI(api_key=key)
+        client = ZoSwiAIClient(api_key=key)
         result = client.images.generate(
             model="gpt-image-1",
             prompt=enriched_prompt,
@@ -4141,7 +5860,8 @@ def generate_image_with_openai(
     b64_payload = str(getattr(first_item, "b64_json", "") or "").strip()
     if b64_payload:
         try:
-            return True, base64.b64decode(b64_payload), ""
+            raw_image = base64.b64decode(b64_payload)
+            return True, apply_zoswi_watermark_to_image(raw_image), ""
         except Exception:
             return False, b"", "Model returned unreadable image content."
 
@@ -4154,7 +5874,7 @@ def generate_image_with_openai(
             payload = response.read()
         if not payload:
             return False, b"", "Downloaded image was empty."
-        return True, payload, ""
+        return True, apply_zoswi_watermark_to_image(payload), ""
     except Exception:
         return False, b"", "Could not download generated image."
 
@@ -4208,44 +5928,51 @@ def is_ai_workspace_image_generation_request(text: str) -> bool:
         return False
     action_terms = [
         "generate",
+        "generated",
+        "generation",
         "create",
+        "creation",
         "make",
         "draw",
         "design",
         "build",
-        "share",
-        "show",
-        "send",
-        "provide",
-        "give",
+        "render",
     ]
     object_terms = ["image", "picture", "photo", "visual", "illustration", "logo", "banner", "poster"]
     has_action = any(term in lowered for term in action_terms)
     has_object = any(term in lowered for term in object_terms)
-    request_phrases = [
-        "can you",
-        "could you",
-        "please",
-        "show me",
-        "share me",
-        "send me",
-        "give me",
-        "i need",
-        "i want",
-    ]
-    has_request_phrase = any(phrase in lowered for phrase in request_phrases)
+    has_creation_phrase = bool(
+        re.search(r"\b(image|picture|photo|visual|illustration|logo|banner|poster)\s+(creation|generation)\b", lowered)
+    )
     command_prefixes = ["/image", "image:", "img:"]
     has_command_prefix = any(lowered.startswith(prefix) for prefix in command_prefixes)
-    return bool(has_object and (has_action or has_request_phrase or has_command_prefix))
+    return bool((has_object and has_action) or has_creation_phrase or has_command_prefix)
 
 
 def is_ai_workspace_image_creation_command(text: str) -> bool:
     lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
     if not lowered:
         return False
-    action_terms = ["generate", "create", "make", "draw", "design", "build"]
+    action_terms = [
+        "generate",
+        "generated",
+        "generation",
+        "create",
+        "creation",
+        "make",
+        "draw",
+        "design",
+        "build",
+        "render",
+    ]
     object_terms = ["image", "picture", "photo", "visual", "illustration", "logo", "banner", "poster"]
-    return bool(any(term in lowered for term in action_terms) and any(term in lowered for term in object_terms))
+    has_creation_phrase = bool(
+        re.search(r"\b(image|picture|photo|visual|illustration|logo|banner|poster)\s+(creation|generation)\b", lowered)
+    )
+    return bool(
+        (any(term in lowered for term in action_terms) and any(term in lowered for term in object_terms))
+        or has_creation_phrase
+    )
 
 
 def is_ai_workspace_image_conversion_request(text: str) -> bool:
@@ -4305,9 +6032,9 @@ def analyze_uploaded_image_with_ai(
 ) -> tuple[bool, str]:
     if not image_bytes:
         return False, "Uploaded image is empty."
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
-        return False, "OPENAI_API_KEY is required for image understanding."
+        return False, "ZOSWI_AI_API_KEY is required for image understanding."
 
     prompt_text = str(user_prompt or "").strip()
     if not prompt_text:
@@ -4325,12 +6052,14 @@ def analyze_uploaded_image_with_ai(
         return False, "Could not read image data."
 
     system_text = (
-        "You are ZoSwi AI Workspace. Provide direct, professional, actionable responses. "
-        "If request or image is explicit sexual / 18+ content, refuse briefly and redirect to safe support."
+        f"You are {ZOSWI_LIVE_WORKSPACE_NAME}. Provide direct, professional, actionable responses. "
+        "If request or image is explicit sexual / 18+ content, refuse briefly and redirect to safe support. "
+        "Do not mention or compare other AI assistants or applications by name. "
+        "Do not recommend third-party apps/software; keep guidance ZoSwi-native."
     )
 
     try:
-        client = OpenAI(api_key=key)
+        client = ZoSwiAIClient(api_key=key)
         response = client.responses.create(
             model="gpt-4.1-mini",
             input=[
@@ -4350,12 +6079,12 @@ def analyze_uploaded_image_with_ai(
         )
         output_text = str(getattr(response, "output_text", "") or "").strip()
         if output_text:
-            return True, output_text
+            return True, sanitize_zoswi_response_text(output_text)
     except Exception:
         pass
 
     try:
-        client = OpenAI(api_key=key)
+        client = ZoSwiAIClient(api_key=key)
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -4372,7 +6101,7 @@ def analyze_uploaded_image_with_ai(
         )
         message_content = completion.choices[0].message.content if completion and completion.choices else ""
         if isinstance(message_content, str) and message_content.strip():
-            return True, message_content.strip()
+            return True, sanitize_zoswi_response_text(message_content.strip())
     except Exception:
         pass
 
@@ -4837,7 +6566,7 @@ def generate_realtime_experience_points(
     if not snippets:
         return fallback_points
 
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         return fallback_points
 
@@ -4880,7 +6609,7 @@ Analysis recommendations:
     """.strip()
 
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=key)
+        llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.2, api_key=key)
         raw = llm.invoke(prompt).content
         parsed = parse_json_response(str(raw))
         raw_points = parsed.get("points", []) if isinstance(parsed, dict) else []
@@ -5242,50 +6971,197 @@ def render_resume_export_assistant(show_toggle_button: bool = True) -> None:
     st.code(copy_block, language="text")
 
 
-def get_openai_key() -> str | None:
-    key_from_db = get_db_setting_value("OPENAI_API_KEY")
+def get_zoswiai_key() -> str | None:
+    key_from_db = get_db_setting_value("ZOSWI_AI_API_KEY")
     if key_from_db:
         return key_from_db
-    key_from_env = str(os.getenv("OPENAI_API_KEY", "")).strip()
+    key_from_env = str(os.getenv("ZOSWI_AI_API_KEY", "")).strip()
     return key_from_env or None
 
 
 def time_based_greeting() -> str:
-    hour = datetime.now(get_app_timezone()).hour
+    # Use local system time so greeting matches the user's device/browser context.
+    hour = datetime.now().astimezone().hour
     if 5 <= hour < 12:
         return "Good morning"
     if 12 <= hour < 17:
         return "Good afternoon"
-    if 17 <= hour < 22:
-        return "Good evening"
-    return "Hello"
+    return "Good evening"
+
+
+def get_zoswi_success_motivation_quotes(limit: int = 100) -> list[str]:
+    cleaned = [str(item).strip() for item in ZOSWI_SUCCESS_MOTIVATION_QUOTES if str(item).strip()]
+    if not cleaned:
+        cleaned = ["Keep moving forward with discipline and focus. - ZoSwi"]
+    if len(cleaned) >= limit:
+        return cleaned[:limit]
+    padded = list(cleaned)
+    source_len = len(cleaned)
+    for index in range(limit - source_len):
+        padded.append(cleaned[index % source_len])
+    return padded[:limit]
+
+
+def render_zoswi_header_motivation_line(first_name: str) -> None:
+    safe_name = re.sub(r"[^a-zA-Z0-9 .'-]", "", str(first_name or "").strip()) or "User"
+    quotes_payload = json.dumps(get_zoswi_success_motivation_quotes(100), ensure_ascii=True)
+    safe_name_payload = json.dumps(safe_name, ensure_ascii=True)
+    st.components.v1.html(
+        f"""
+        <style>
+            html, body {{
+                margin: 0;
+                padding: 0;
+                background: transparent !important;
+            }}
+            #zoswi-header-quote-line {{
+                margin: 0.06rem 0 0.06rem 0;
+                color: #64748b;
+                font-size: 0.93rem;
+                font-weight: 600;
+                line-height: 1.35;
+                letter-spacing: 0.005em;
+                transition: opacity 200ms ease;
+                opacity: 1;
+                text-wrap: pretty;
+                word-break: break-word;
+            }}
+        </style>
+        <div id="zoswi-header-quote-line"></div>
+        <script>
+        (function () {{
+            const userName = {safe_name_payload};
+            const quotes = {quotes_payload};
+            const lineEl = document.getElementById("zoswi-header-quote-line");
+            if (!lineEl || !Array.isArray(quotes) || quotes.length === 0) {{
+                return;
+            }}
+            function pickNext(currentIndex) {{
+                if (quotes.length <= 1) {{
+                    return 0;
+                }}
+                let next = currentIndex;
+                while (next === currentIndex) {{
+                    next = Math.floor(Math.random() * quotes.length);
+                }}
+                return next;
+            }}
+            let activeIndex = Math.floor(Math.random() * quotes.length);
+            function renderLine() {{
+                lineEl.textContent = "Hey " + userName + " - " + quotes[activeIndex];
+            }}
+            function switchQuote(nextIndex) {{
+                lineEl.style.opacity = "0";
+                setTimeout(() => {{
+                    activeIndex = nextIndex;
+                    renderLine();
+                    lineEl.style.opacity = "1";
+                }}, 150);
+            }}
+            renderLine();
+            setInterval(() => {{
+                switchQuote(pickNext(activeIndex));
+            }}, 15000);
+        }})();
+        </script>
+        """,
+        height=76,
+    )
+
+
+def build_zoswi_quick_links_line() -> str:
+    flags = get_dashboard_feature_flags()
+    links = ["[Home](?nav=home)"]
+    if flags.get("careers", False):
+        links.append("[ZoSwi Careers](?nav=careers)")
+    if flags.get("ai_workspace", False):
+        links.append(f"[{ZOSWI_LIVE_WORKSPACE_NAME}](?nav=ai_workspace)")
+    if flags.get("coding_room", False):
+        links.append("[AI Coding Room](?nav=coding_room)")
+    if flags.get("live_interview", False):
+        links.append("[Live AI Interview](?nav=live_interview)")
+    if flags.get("immigration_updates", False):
+        links.append("[Immigration Updates](?nav=immigration_updates)")
+    links.extend(
+        [
+            "[Recent Chats](?nav=chats)",
+            "[Recent Scores](?nav=scores)",
+        ]
+    )
+    return "Quick links: " + " | ".join(links)
+
+
+def ensure_quick_links_in_message_state(state_key: str) -> None:
+    raw_messages = st.session_state.get(state_key, [])
+    if not isinstance(raw_messages, list) or not raw_messages:
+        return
+    first_message = raw_messages[0]
+    if not isinstance(first_message, dict):
+        return
+    role = str(first_message.get("role", "")).strip().lower()
+    content = str(first_message.get("content", "")).strip()
+    if role != "assistant" or not content:
+        return
+    if "quick links:" in content.lower():
+        links_line = build_zoswi_quick_links_line()
+        if state_key == "bot_messages":
+            user = st.session_state.get("user") or {}
+            full_name = str(user.get("full_name", "")).strip()
+            migrated = build_bot_first_message_content(full_name)
+        elif state_key == "ai_workspace_messages":
+            migrated = (
+                "ZoSwi Live Workspace is ready. "
+                "Ask anything to get started.\n\n"
+                f"{links_line}"
+            )
+        else:
+            migrated = content.replace(
+                "[AI Workspace](?nav=ai_workspace)",
+                f"[{ZOSWI_LIVE_WORKSPACE_NAME}](?nav=ai_workspace)",
+            )
+        if migrated != content:
+            updated_first = dict(first_message)
+            updated_first["content"] = migrated
+            updated_messages = [updated_first]
+            updated_messages.extend(raw_messages[1:])
+            st.session_state[state_key] = updated_messages
+        return
+    updated_first = dict(first_message)
+    updated_first["content"] = f"{content}\n\n{build_zoswi_quick_links_line()}"
+    updated_messages = [updated_first]
+    updated_messages.extend(raw_messages[1:])
+    st.session_state[state_key] = updated_messages
 
 
 def default_bot_messages(full_name: str | None = None) -> list[dict[str, str]]:
-    if full_name and full_name.strip():
-        first_name = full_name.strip().split()[0]
-        greeting = (
-            f"{time_based_greeting()}, {first_name}. "
-            "I am ZoSwi and I am live to help with your Resume and JD analysis."
-        )
-        return [{"role": "assistant", "content": greeting}]
-    return [{"role": "assistant", "content": BOT_WELCOME_MESSAGE}]
+    return [{"role": "assistant", "content": build_bot_first_message_content(full_name)}]
+
+
+def build_bot_first_message_content(full_name: str | None = None) -> str:
+    first_name = "User"
+    cleaned_name = str(full_name or "").strip()
+    if cleaned_name:
+        first_name = cleaned_name.split()[0]
+    intro = f"Hi {first_name}, {time_based_greeting()}. {BOT_WELCOME_MESSAGE}"
+    return f"{intro}\n\n{build_zoswi_quick_links_line()}"
 
 
 def default_ai_workspace_messages(full_name: str | None = None) -> list[dict[str, str]]:
-    if full_name and full_name.strip():
-        first_name = full_name.strip().split()[0]
-        greeting = (
-            f"{time_based_greeting()}, {first_name}. "
-            "I am ZoSwi AI Workspace. Ask anything and I will respond like a real-time assistant."
-        )
-        return [{"role": "assistant", "content": greeting}]
+    links_line = build_zoswi_quick_links_line()
     return [
         {
             "role": "assistant",
-            "content": "I am ZoSwi AI Workspace. Ask anything and I will respond like a real-time assistant.",
+            "content": (
+                "ZoSwi Live Workspace is ready. "
+                "Ask anything to get started.\n\n"
+                f"{links_line}"
+            ),
         }
     ]
+
+
+def is_home_dashboard_view() -> bool:
+    return str(st.session_state.get("dashboard_view", "home")).strip().lower() == "home"
 
 
 def sync_bot_for_logged_in_user() -> None:
@@ -5340,9 +7216,9 @@ def sync_bot_for_logged_in_user() -> None:
             "Access unlocked for this account." if unlocked else ""
         )
         st.session_state.ai_workspace_unlock_ok = unlocked
-        if full_name:
+        if full_name and is_home_dashboard_view():
             first_name = full_name.split()[0]
-            st.toast(f"{time_based_greeting()}, {first_name}. ZoSwi is live.")
+            st.toast(f"Hi {first_name}, ZoSwi AI is live")
 
 
 def normalize_category(score: int, model_category: str | None) -> str:
@@ -5410,7 +7286,7 @@ def fallback_analysis(resume_text: str, job_description: str) -> dict[str, Any]:
         "category": category,
         "summary": "Heuristic fallback analysis was used because AI output was unavailable.",
         "strengths": ["Keyword overlap was checked between resume and job description."],
-        "gaps": ["Enable OpenAI key for deeper semantic analysis and stronger recommendations."],
+        "gaps": ["Enable ZoSwiAI key for deeper semantic analysis and stronger recommendations."],
         "recommendations": [
             "Add measurable achievements tied to the target role.",
             "Mirror role-specific keywords from the job description naturally.",
@@ -5425,7 +7301,7 @@ def build_resume_vectorstore_cached(resume_text: str, api_key: str) -> tuple[Any
     documents = [Document(page_content=chunk) for chunk in chunks if chunk.strip()]
     if not documents:
         return None, 0
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
+    embeddings = ZoSwiAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
     vectorstore = FAISS.from_documents(documents, embeddings)
     return vectorstore, len(documents)
 
@@ -5435,7 +7311,7 @@ def analyze_resume_with_ai(resume_text: str, job_description: str) -> dict[str, 
     if not jd_ok:
         raise ValueError(jd_error)
 
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         return fallback_analysis(resume_text, job_description)
 
@@ -5470,7 +7346,7 @@ Job description:
 {job_description}
     """.strip()
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=key)
+    llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.2, api_key=key)
     result_text = llm.invoke(prompt).content
 
     try:
@@ -5490,6 +7366,48 @@ Job description:
         return fallback_analysis(resume_text, job_description)
 
 
+def sanitize_zoswi_response_text(text: str) -> str:
+    raw_text = str(text or "")
+    if not raw_text:
+        return ""
+    cleaned = ZOSWI_BLOCKED_APP_NAME_PATTERN.sub("ZoSwi", raw_text)
+    cleaned = ZOSWI_BLOCKED_EXTERNAL_APP_PATTERN.sub("ZoSwi", cleaned)
+    cleaned = re.sub(
+        r"(?i)\b(?:apps?|tools?|software|platforms?)\s+(?:like|such as)\s+[^.\n]+",
+        "ZoSwi workflows",
+        cleaned,
+    )
+    cleaned = re.sub(r"\bZoSwi(?:\s*,\s*ZoSwi){1,}", "ZoSwi", cleaned)
+    cleaned = re.sub(r"\bZoSwi\s+or\s+ZoSwi\b", "ZoSwi", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?m)^\s*#{1,6}\s*", "", cleaned)
+    cleaned = re.sub(r"(?i)\biam\b", "I am", cleaned)
+    cleaned = re.sub(r"(?i)\bican\b", "I can", cleaned)
+    cleaned = re.sub(r"(?i)\biwill\b", "I will", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def iter_sanitized_stream_text(parts: Iterable[str]) -> Iterable[str]:
+    tail = ""
+    for part in parts:
+        piece = str(part or "")
+        if not piece:
+            continue
+        tail += piece
+        if len(tail) <= ZOSWI_STREAM_SANITIZE_TAIL_CHARS:
+            continue
+        emit = tail[:-ZOSWI_STREAM_SANITIZE_TAIL_CHARS]
+        safe_emit = sanitize_zoswi_response_text(emit)
+        if safe_emit:
+            yield safe_emit
+        tail = tail[-ZOSWI_STREAM_SANITIZE_TAIL_CHARS:]
+    if tail:
+        safe_tail = sanitize_zoswi_response_text(tail)
+        if safe_tail:
+            yield safe_tail
+
+
 def build_recent_chat_context(limit: int = 6) -> str:
     chat = st.session_state.get("bot_messages", [])
     if not isinstance(chat, list):
@@ -5505,10 +7423,101 @@ def build_recent_chat_context(limit: int = 6) -> str:
     return "\n".join(lines)
 
 
+def infer_zoswi_response_mode(message: str, intent: str = "") -> str:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return "brief"
+
+    brief_markers = [
+        "briefly",
+        "short answer",
+        "quick answer",
+        "in short",
+        "one line",
+        "tldr",
+        "tl;dr",
+    ]
+    detailed_markers = [
+        "explain",
+        "elaborate",
+        "in detail",
+        "detailed",
+        "step by step",
+        "walk me through",
+        "break down",
+        "breakdown",
+        "deep dive",
+        "compare",
+        "pros and cons",
+        "tradeoff",
+        "roadmap",
+        "checklist",
+        "root cause",
+        "why",
+    ]
+    vague_markers = [
+        "help",
+        "suggest",
+        "idea",
+        "any tips",
+        "what do you think",
+        "guide me",
+        "not sure",
+        "confused",
+        "stuck",
+    ]
+
+    if any(marker in text for marker in brief_markers):
+        return "brief"
+    if any(marker in text for marker in detailed_markers):
+        return "detailed"
+
+    words = [token for token in text.split(" ") if token]
+    word_count = len(words)
+    question_count = text.count("?")
+    resolved_intent = str(intent or infer_ai_workspace_intent(text)).strip().lower()
+
+    if resolved_intent in {"troubleshooting", "planning", "decision"} and word_count >= 6:
+        return "detailed"
+    if resolved_intent == "coding" and any(
+        token in text for token in ("error", "traceback", "exception", "bug", "fix", "fails", "failed")
+    ):
+        return "detailed"
+    if any(marker in text for marker in vague_markers) and word_count <= 20:
+        return "brief"
+    if word_count <= 8 and question_count <= 1:
+        return "brief"
+    if word_count >= 26 or question_count >= 2:
+        return "detailed"
+    return "balanced"
+
+
+def build_zoswi_response_mode_guidance(mode: str) -> str:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode == "brief":
+        return (
+            "- Keep the response human and concise in 2-4 short sentences.\n"
+            "- Give direct value without over-explaining.\n"
+            "- If context is missing, end with one clarifying question."
+        )
+    if normalized_mode == "detailed":
+        return (
+            "- Start with a one-line summary.\n"
+            "- Then provide a structured breakdown with concrete steps and rationale.\n"
+            "- Include assumptions and a practical next move."
+        )
+    return (
+        "- Start with a direct answer, then up to 3 practical next steps.\n"
+        "- Keep it concise but complete enough for action."
+    )
+
+
 def build_assistant_prompt(message: str) -> str:
     analysis = st.session_state.get("analysis_result")
     user = st.session_state.get("user") or {}
     full_name = str(user.get("full_name", "")).strip() or "Candidate"
+    builder_name = get_zoswi_builder_name() or "the ZoSwi team"
+    module_status_summary = build_dashboard_module_status_summary()
 
     if analysis:
         strengths = analysis.get("strengths", [])
@@ -5535,24 +7544,38 @@ def build_assistant_prompt(message: str) -> str:
 
     cleaned_message = re.sub(r"^\s*[A-Za-z]\s*:\s*", "", message.strip())
     chat_context = build_recent_chat_context()
+    response_mode = infer_zoswi_response_mode(cleaned_message, "career")
+    response_mode_guidance = build_zoswi_response_mode_guidance(response_mode)
 
     return f"""
-You are ZoSwi, an AI assistant with a conversational style similar to ChatGPT.
+You are ZoSwi, an AI assistant for professional career guidance and ZoSwi product guidance.
 
 Conversation style:
 - Be warm, lively, concise, and natural.
 - If user says thanks or appreciation, respond naturally (for example: You're welcome) and offer next help.
 - Keep replies focused on exactly what the user asked.
+- Use plain text formatting. Do not use markdown headings like #, ##, or ###.
+- Keep language natural and readable with proper spacing and punctuation.
+- Keep branding ZoSwi-only. Do not mention or compare any other AI assistant or application by name.
+- Do not mention, recommend, or list any third-party app/software names. Give ZoSwi-native guidance only.
+- Adapt depth by response mode: brief for vague asks, detailed for complex asks.
 
 Scope and safety:
-- Primary scope: resume review, JD analysis, ATS keywords, interview prep, and role-skill guidance in career context.
-- If user asks unrelated topics, respond politely and steer back to resume/JD help.
+- Primary scope: resume review, JD analysis, ATS keywords, interview prep, role-skill guidance, and ZoSwi product navigation.
+- Runtime module flags: {module_status_summary}.
+- Respect runtime module flags and only claim module availability when that module is enabled.
+- If asked who built ZoSwi (or who built you), answer that ZoSwi was built by {builder_name}.
+- For coding-room questions, only guide to Home -> Start 3-Stage AI Coding Room when that module is enabled.
 - If request is harmful, illegal, or privacy-invasive, refuse politely and redirect to safe career guidance.
 - Never request or expose sensitive data like passwords, API keys, bank/identity details.
 
 Candidate context:
 - Candidate name: {full_name}
 - Latest analysis snapshot: {analysis_summary}
+
+Response mode: {response_mode}
+Mode guidance:
+{response_mode_guidance}
 
 Recent chat:
 {chat_context or "No prior chat context."}
@@ -5580,38 +7603,72 @@ def chunk_to_text(chunk: Any) -> str:
 
 
 def ask_assistant_bot_stream(message: str):
-    key = get_openai_key()
-    if not key:
-        yield "OPENAI_API_KEY is required for ZoSwi responses. Please set it and retry."
+    if is_zoswi_builder_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_builder_response())
         return
 
-    llm = ChatOpenAI(
+    if is_zoswi_capability_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
+        return
+
+    if is_agentive_job_search_request(message):
+        _, response_text = run_agentive_job_search_from_message(message, source_profile="ZoSwi Chat Agent")
+        yield response_text
+        return
+
+    key = get_zoswiai_key()
+    if not key:
+        yield "ZOSWI_AI_API_KEY is required for ZoSwi responses. Please set it and retry."
+        return
+
+    response_mode = infer_zoswi_response_mode(message, "career")
+    max_tokens_by_mode = {
+        "brief": 220,
+        "balanced": 360,
+        "detailed": 620,
+    }
+    llm = ZoSwiAIChat(
         model="gpt-4o-mini",
         temperature=0.4,
-        max_tokens=220,
+        max_tokens=max_tokens_by_mode.get(response_mode, 360),
         max_retries=1,
         timeout=25,
         api_key=key,
     )
     prompt = build_assistant_prompt(message)
     try:
-        for chunk in llm.stream(prompt):
-            text = chunk_to_text(chunk)
-            if text:
-                yield text
+        chunk_texts = (chunk_to_text(chunk) for chunk in llm.stream(prompt))
+        for text in iter_sanitized_stream_text(chunk_texts):
+            yield text
     except Exception:
         yield "I hit a temporary issue generating a response. Please try again."
 
 
 def ask_assistant_bot(message: str) -> str:
-    key = get_openai_key()
-    if not key:
-        return "OPENAI_API_KEY is required for ZoSwi responses. Please set it and retry."
+    if is_zoswi_builder_request(message):
+        return sanitize_zoswi_response_text(build_zoswi_builder_response())
 
-    llm = ChatOpenAI(
+    if is_zoswi_capability_request(message):
+        return sanitize_zoswi_response_text(build_zoswi_capability_response(message))
+
+    if is_agentive_job_search_request(message):
+        _, response_text = run_agentive_job_search_from_message(message, source_profile="ZoSwi Chat Agent")
+        return response_text
+
+    key = get_zoswiai_key()
+    if not key:
+        return "ZOSWI_AI_API_KEY is required for ZoSwi responses. Please set it and retry."
+
+    response_mode = infer_zoswi_response_mode(message, "career")
+    max_tokens_by_mode = {
+        "brief": 220,
+        "balanced": 360,
+        "detailed": 620,
+    }
+    llm = ZoSwiAIChat(
         model="gpt-4o-mini",
         temperature=0.4,
-        max_tokens=220,
+        max_tokens=max_tokens_by_mode.get(response_mode, 360),
         max_retries=1,
         timeout=25,
         api_key=key,
@@ -5619,7 +7676,8 @@ def ask_assistant_bot(message: str) -> str:
     prompt = build_assistant_prompt(message)
 
     try:
-        return llm.invoke(prompt).content
+        content = llm.invoke(prompt).content
+        return sanitize_zoswi_response_text(str(content))
     except Exception:
         return "I hit a temporary issue generating a response. Please try again."
 
@@ -5643,14 +7701,193 @@ def build_ai_workspace_context(limit: int = 12) -> str:
     return "\n".join(lines)
 
 
+def infer_ai_workspace_intent(message: str) -> str:
+    text = str(message or "").strip().lower()
+    if not text:
+        return "general"
+
+    if any(
+        token in text
+        for token in (
+            "error",
+            "traceback",
+            "exception",
+            "not working",
+            "fails",
+            "failed",
+            "debug",
+            "fix this",
+            "bug",
+            "issue",
+            "crash",
+        )
+    ):
+        return "troubleshooting"
+
+    if any(
+        token in text
+        for token in (
+            "resume",
+            "job description",
+            "jd",
+            "interview",
+            "ats",
+            "cover letter",
+            "career",
+            "role",
+            "h1b",
+            "visa",
+        )
+    ):
+        return "career"
+
+    if any(
+        token in text
+        for token in (
+            "code",
+            "python",
+            "java",
+            "javascript",
+            "typescript",
+            "api",
+            "sql",
+            "function",
+            "class",
+            "algorithm",
+            "compile",
+        )
+    ):
+        return "coding"
+
+    if any(
+        token in text
+        for token in (
+            "plan",
+            "roadmap",
+            "mvp",
+            "strategy",
+            "architect",
+            "design",
+            "go to market",
+            "execution",
+        )
+    ):
+        return "planning"
+
+    if any(
+        token in text
+        for token in (
+            "compare",
+            "vs",
+            "tradeoff",
+            "pros and cons",
+            "which one",
+            "decision",
+            "choose",
+        )
+    ):
+        return "decision"
+
+    if any(
+        token in text
+        for token in (
+            "write",
+            "rewrite",
+            "draft",
+            "email",
+            "message",
+            "summary",
+            "summarize",
+        )
+    ):
+        return "writing"
+
+    return "general"
+
+
+def build_ai_workspace_intent_guidance(intent: str) -> str:
+    mode = str(intent or "general").strip().lower()
+    if mode == "troubleshooting":
+        return (
+            "- Start with immediate triage checks first.\n"
+            "- List likely root causes ranked by probability.\n"
+            "- Provide the minimum safe fix and a short verification checklist.\n"
+            "- If logs/errors are missing, ask only one focused follow-up."
+        )
+    if mode == "career":
+        return (
+            "- Provide role-fit advice tied to resume/JD context when available.\n"
+            "- Suggest high-impact actions the user can complete in 24-72 hours.\n"
+            "- Call out risks (visa/sponsorship/skills gaps) clearly and politely."
+        )
+    if mode == "coding":
+        return (
+            "- Explain the fix in plain terms, then show the exact code-level steps.\n"
+            "- Prefer minimal, testable changes over large rewrites.\n"
+            "- Include a quick verification method or test command."
+        )
+    if mode == "planning":
+        return (
+            "- Convert the request into a practical execution plan with milestones.\n"
+            "- Include trade-offs, risks, and a recommended path.\n"
+            "- Keep scope realistic for MVP delivery."
+        )
+    if mode == "decision":
+        return (
+            "- Compare options using explicit criteria and trade-offs.\n"
+            "- Recommend one option and justify it with constraints and risk.\n"
+            "- Include a short fallback option."
+        )
+    if mode == "writing":
+        return (
+            "- Draft concise, professional text tailored to the requested tone.\n"
+            "- Keep the message actionable and easy to send with minimal edits.\n"
+            "- Offer one stronger alternative phrasing when useful."
+        )
+    return (
+        "- Give a direct answer first, then practical steps.\n"
+        "- Keep output specific and actionable.\n"
+        "- Ask a brief clarifying question only if required."
+    )
+
+
+def build_ai_workspace_progress_text(
+    message: str,
+    has_attachment: bool = False,
+    attachment_is_image: bool = False,
+) -> str:
+    if is_agentive_job_search_request(message):
+        return "Running agentive job match..."
+    if bool(attachment_is_image):
+        return "Analyzing image..."
+    if bool(has_attachment):
+        return "Processing file..."
+    intent = infer_ai_workspace_intent(message)
+    status_map = {
+        "troubleshooting": "Debugging issue...",
+        "career": "Preparing guidance...",
+        "coding": "Preparing solution...",
+        "planning": "Building plan...",
+        "decision": "Evaluating options...",
+        "writing": "Drafting response...",
+    }
+    return status_map.get(intent, "Processing request...")
+
+
 def build_ai_workspace_prompt(message: str) -> str:
     user = st.session_state.get("user") or {}
     full_name = str(user.get("full_name", "")).strip() or "Candidate"
+    builder_name = get_zoswi_builder_name() or "the ZoSwi team"
+    module_status_summary = build_dashboard_module_status_summary()
     chat_context = build_ai_workspace_context()
     attachment_context = build_ai_workspace_attachment_context()
     clean_message = message.strip()
+    intent = infer_ai_workspace_intent(clean_message)
+    intent_guidance = build_ai_workspace_intent_guidance(intent)
+    response_mode = infer_zoswi_response_mode(clean_message, intent)
+    response_mode_guidance = build_zoswi_response_mode_guidance(response_mode)
     return f"""
-You are ZoSwi AI Workspace, a high-quality general assistant similar to ChatGPT and Claude.
+You are ZoSwi Live Workspace, a high-quality professional assistant.
 
 Response rules:
 - Be direct, helpful, and conversational.
@@ -5658,9 +7895,29 @@ Response rules:
 - Prefer practical answers with concrete steps.
 - Do not fabricate facts. If uncertain, say so briefly.
 - Keep answers concise unless the user asks for depth.
+- Use plain text formatting. Do not use markdown headings like #, ##, or ###.
+- Prefer one short paragraph by default; use lists only when steps are actually needed.
+- Keep language natural and readable with proper spacing and punctuation.
 - If the user has a real-time issue, provide immediate triage steps first, then deeper fixes.
 - Do not provide or create explicit sexual / 18+ content. Refuse briefly and redirect to safe help.
-- Support both research-style Q&A and coding-copilot style help in one thread.
+- Support both research-style Q&A and coding-assistant style help in one thread.
+- Keep branding ZoSwi-only. Do not mention or compare any other AI assistant or application by name.
+- Do not mention, recommend, or list any third-party app/software names. Provide ZoSwi-native workflows only.
+- Runtime module flags: {module_status_summary}.
+- Respect runtime module flags and only claim module availability when that module is enabled.
+- If asked who built ZoSwi (or who built you), answer that ZoSwi was built by {builder_name}.
+- If the user asks for innovation ideas, include a short section named "ZoSwi Original Ideas" with practical, non-generic concepts and success metrics.
+- Adapt depth by response mode: brief for vague asks, detailed for complex asks.
+
+Detected intent mode: {intent}
+
+Intent guidance:
+{intent_guidance}
+
+Detected response mode: {response_mode}
+
+Response mode guidance:
+{response_mode_guidance}
 
 Context:
 - User: {full_name}
@@ -5681,25 +7938,44 @@ def ask_ai_workspace_stream(message: str):
         yield AI_WORKSPACE_ADULT_BLOCK_MESSAGE
         return
 
-    key = get_openai_key()
-    if not key:
-        yield "OPENAI_API_KEY is required for AI Workspace responses. Please set it and retry."
+    if is_zoswi_builder_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_builder_response())
         return
 
-    llm = ChatOpenAI(
+    if is_zoswi_capability_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
+        return
+
+    if is_agentive_job_search_request(message):
+        _, response_text = run_agentive_job_search_from_message(message, source_profile="Live Workspace Agent")
+        yield response_text
+        return
+
+    key = get_zoswiai_key()
+    if not key:
+        yield "ZOSWI_AI_API_KEY is required for ZoSwi Live Workspace responses. Please set it and retry."
+        return
+
+    intent_mode = infer_ai_workspace_intent(message)
+    response_mode = infer_zoswi_response_mode(message, intent_mode)
+    max_tokens_by_mode = {
+        "brief": 340,
+        "balanced": 560,
+        "detailed": 760,
+    }
+    llm = ZoSwiAIChat(
         model="gpt-4o-mini",
         temperature=0.35,
-        max_tokens=520,
+        max_tokens=max_tokens_by_mode.get(response_mode, 560),
         max_retries=1,
         timeout=30,
         api_key=key,
     )
     prompt = build_ai_workspace_prompt(message)
     try:
-        for chunk in llm.stream(prompt):
-            text = chunk_to_text(chunk)
-            if text:
-                yield text
+        chunk_texts = (chunk_to_text(chunk) for chunk in llm.stream(prompt))
+        for text in iter_sanitized_stream_text(chunk_texts):
+            yield text
     except Exception:
         yield "I hit a temporary issue generating a response. Please try again."
 
@@ -6075,7 +8351,7 @@ def build_coding_stage_payload(
     analysis_result: dict[str, Any],
 ) -> dict[str, Any]:
     fallback = _fallback_coding_stage_payload(resume_text, job_description)
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         return fallback
 
@@ -6094,7 +8370,7 @@ def build_coding_stage_payload(
         1200,
     )
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.35, api_key=key)
+        llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.35, api_key=key)
         prompt = f"""
 You are designing a realistic 3-stage live coding interview.
 Return ONLY valid JSON in this schema:
@@ -6469,7 +8745,7 @@ def run_hidden_tests_for_submission(
         "ready_for_evaluation": fallback_ready,
     }
 
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         return fallback_result
 
@@ -6503,7 +8779,7 @@ JD snapshot:
 {_trim_block(job_description, 450)}
     """.strip()
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.15, api_key=key)
+        llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.15, api_key=key)
         raw = llm.invoke(prompt).content
         parsed = parse_json_response(str(raw))
         total = int(parsed.get("total", fallback_result["total"]))
@@ -6580,7 +8856,7 @@ def evaluate_coding_submission(
         "next_step": "Refine the solution for edge cases, then move to the next stage.",
     }
 
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         return fallback
 
@@ -6617,7 +8893,7 @@ Job description snapshot:
 {_trim_block(job_description, 700)}
     """.strip()
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=key)
+        llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.2, api_key=key)
         raw = llm.invoke(prompt).content
         parsed = parse_json_response(str(raw))
         score = int(parsed.get("score", fallback_score))
@@ -6669,7 +8945,7 @@ def stream_coding_interviewer_reply(
         "nudge": "I did not hear a complete response. Share your next step, then we will proceed.",
     }
     fallback_default = "Understood. Explain your approach in one minute, then submit the best working version."
-    key = get_openai_key()
+    key = get_zoswiai_key()
     if not key:
         yield fallback_map.get(cleaned_action, fallback_default)
         return
@@ -6686,6 +8962,8 @@ Keep responses concise (max 80 words), conversational, and interviewer-like.
 If candidate response is weak or unclear, ask a focused follow-up question.
 If action is "hint", provide one useful hint without revealing full solution.
 Guide the candidate to complete TODO sections rather than building a full service.
+Do not mention or compare other AI assistants or applications by name.
+Do not mention or recommend third-party software names.
 
 Candidate name: {user_name}
 Current stage number: {stage_index + 1} of {CODING_STAGE_COUNT}
@@ -6701,11 +8979,10 @@ Recent coding chat:
 {chat_context or "No previous chat context."}
     """.strip()
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.45, api_key=key)
-        for chunk in llm.stream(prompt):
-            text = chunk_to_text(chunk)
-            if text:
-                yield text
+        llm = ZoSwiAIChat(model="gpt-4o-mini", temperature=0.45, api_key=key)
+        chunk_texts = (chunk_to_text(chunk) for chunk in llm.stream(prompt))
+        for text in iter_sanitized_stream_text(chunk_texts):
+            yield text
     except Exception:
         yield fallback_map.get(cleaned_action, fallback_default)
 
@@ -6923,8 +9200,34 @@ def format_chat_message_html(content: str) -> str:
     normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
     safe_content = html.escape(normalized)
 
+    def _safe_chat_href(raw_href: str) -> tuple[str, bool]:
+        href = html.unescape(str(raw_href or "")).strip()
+        if not href:
+            return "#", False
+        lowered = href.lower()
+        if lowered.startswith("javascript:") or lowered.startswith("data:"):
+            return "#", False
+        if lowered.startswith("?") or lowered.startswith("/") or lowered.startswith("#"):
+            return href, False
+        if lowered.startswith("http://") or lowered.startswith("https://") or lowered.startswith("mailto:"):
+            return href, True
+        return "#", False
+
+    def _render_markdown_link(match: re.Match[str]) -> str:
+        raw_label = html.unescape(str(match.group(1) or "")).strip()
+        label = html.escape(raw_label[:120] if raw_label else "Link")
+        href, is_external = _safe_chat_href(str(match.group(2) or ""))
+        if href == "#":
+            return label
+        safe_href = html.escape(href, quote=True)
+        target = "_blank" if is_external else "_self"
+        rel = "noopener noreferrer" if is_external else "noopener"
+        return f'<a href="{safe_href}" target="{target}" rel="{rel}">{label}</a>'
+
     # Render inline code safely inside the custom message bubble.
     safe_content = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", safe_content)
+    # Render markdown links as safe anchors.
+    safe_content = re.sub(r"\[([^\]\n]{1,120})\]\(([^)\n]{1,500})\)", _render_markdown_link, safe_content)
     # Render markdown-style bold markers used by model responses.
     safe_content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe_content)
     safe_content = re.sub(r"__(.+?)__", r"<strong>\1</strong>", safe_content)
@@ -6975,20 +9278,53 @@ def format_ai_workspace_image_message_html(
     image_data_uri: str,
     image_alt: str = "AI generated image",
 ) -> str:
+    raw_src = str(image_data_uri or "").strip()
     safe_caption = html.escape(str(caption_text or "").strip())
     safe_alt = html.escape(str(image_alt or "AI generated image").strip())
-    safe_src = html.escape(str(image_data_uri or "").strip(), quote=True)
+    safe_src = html.escape(raw_src, quote=True)
     if not safe_src:
         return format_ai_workspace_message_html("assistant", safe_caption or "Image response unavailable.", "Candidate")
+    mime_ext_map = {
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/bmp": "bmp",
+        "image/tiff": "tiff",
+    }
+    mime_token = ""
+    if raw_src.startswith("data:") and ";" in raw_src:
+        mime_token = raw_src.split(";", 1)[0].replace("data:", "").strip().lower()
+    file_ext = mime_ext_map.get(mime_token, "png")
+    raw_name = str(image_alt or "").strip()
+    if not raw_name or raw_name.lower() in {"ai generated image", "ai image", "image"}:
+        raw_name = f"ZoSwi_AI_Image_{datetime.now().strftime('%Y%m%d')}"
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name).strip("._-") or "zoswi_image"
+    if re.search(rf"\.{re.escape(file_ext)}$", safe_stem, re.IGNORECASE):
+        download_file_name = safe_stem
+    else:
+        download_file_name = f"{safe_stem}.{file_ext}"
+    safe_download_name = html.escape(download_file_name, quote=True)
+    modal_id = f"aiws_image_full_{hashlib.sha1(raw_src.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
+    safe_modal_id = html.escape(modal_id, quote=True)
+    caption_html = f'<div class="aiws-msg-text">{safe_caption}</div>' if safe_caption else ""
     return (
         '<div class="aiws-row assistant">'
         '<div class="aiws-msg assistant aiws-msg-image">'
-        '<div class="aiws-msg-head assistant">'
-        '<span class="aiws-name assistant">ZoSwi</span>'
-        "</div>"
-        f'<div class="aiws-msg-text">{safe_caption}</div>'
+        f"{caption_html}"
         '<div class="aiws-msg-image-wrap">'
         f'<img src="{safe_src}" alt="{safe_alt}" loading="lazy" />'
+        '<div class="aiws-image-actions">'
+        f'<a class="aiws-image-action" href="{safe_src}" download="{safe_download_name}" title="Download image" aria-label="Download image">&#x2B07;</a>'
+        f'<a class="aiws-image-action" href="#{safe_modal_id}" title="Full view" aria-label="Open full view">&#x26F6;</a>'
+        "</div>"
+        "</div>"
+        f'<div id="{safe_modal_id}" class="aiws-image-modal">'
+        f'<a class="aiws-image-modal-backdrop" href="#" aria-label="Close full view"></a>'
+        '<div class="aiws-image-modal-card">'
+        '<a class="aiws-image-modal-close" href="#" aria-label="Close full view">&times;</a>'
+        f'<img src="{safe_src}" alt="{safe_alt}" loading="lazy" />'
+        "</div>"
         "</div>"
         "</div>"
         "</div>"
@@ -7028,6 +9364,7 @@ def render_zoswi_widget() -> None:
         for msg in st.session_state.bot_messages
         if str(msg.get("content", "")).strip().lower() not in stale_status_messages
     ]
+    ensure_quick_links_in_message_state("bot_messages")
     if st.session_state.get("clear_zoswi_input"):
         st.session_state.zoswi_input = ""
         st.session_state.clear_zoswi_input = False
@@ -7038,7 +9375,8 @@ def render_zoswi_widget() -> None:
                 top_cols = st.columns([8, 1, 1, 1])
                 with top_cols[0]:
                     st.markdown("**ZoSwi AI Assistant**")
-                    st.caption(f"{time_based_greeting()}, {first_name}")
+                    if is_home_dashboard_view():
+                        st.caption(f"{time_based_greeting()}, {first_name}. ZoSwi AI is live.")
                 with top_cols[1]:
                     if st.button("\u2212", key="zoswi_minimize", help="Minimize"):
                         st.session_state.bot_open = False
@@ -7055,7 +9393,7 @@ def render_zoswi_widget() -> None:
                         st.session_state.bot_messages = default_bot_messages(full_name)
                         st.rerun()
 
-                with st.container(height=300):
+                with st.container(height=360):
                     chat_history_container = st.container()
                     live_reply_container = st.container()
                     with chat_history_container:
@@ -7160,6 +9498,14 @@ def init_state() -> None:
         "bot_pending_prompt": None,
         "chat_rename_target": None,
         "dashboard_view": "home",
+        "live_interview_candidate_name": "",
+        "live_interview_role": "Software Engineer",
+        "live_interview_requirement_type": "mixed",
+        "live_interview_embed": False,
+        "immigration_search_query": "",
+        "immigration_selected_categories": [],
+        "immigration_ai_brief": "",
+        "immigration_last_refresh_message": "",
         "full_chat_input": "",
         "full_chat_submit": False,
         "clear_full_chat_input": False,
@@ -8272,6 +10618,7 @@ def render_auth_screen() -> None:
     render_app_styles()
     render_zoswi_outside_minimize_listener(False)
     render_top_left_logo()
+    render_global_music_bar()
     logo_data_uri = get_logo_data_uri()
     if "auth_privacy_center_open" not in st.session_state:
         st.session_state.auth_privacy_center_open = False
@@ -8859,6 +11206,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
     user_id = int(user.get("id") or 0)
     backfill_default_chat_titles(user_id)
     user_menu_open = bool(st.session_state.get("user_menu_open", False))
+    is_mobile = is_mobile_browser()
     full_name_raw = str(user.get("full_name", "")).strip()
     first_name = full_name_raw.split()[0] if full_name_raw else "Candidate"
     menu_title = f"{first_name}'s Menu"
@@ -8867,7 +11215,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
     with st.sidebar:
         with st.container(key="sidebar_menu_body"):
             with st.container(key="sidebar_signed_row"):
-                signed_cols = st.columns([7, 3], gap="small")
+                signed_cols = st.columns([8.6, 1.4], gap="small") if is_mobile else st.columns([7, 3], gap="small")
                 with signed_cols[0]:
                     st.markdown(
                         f'<div class="ai-sidebar-signed">Signed in as <strong>{signed_in_name}</strong></div>',
@@ -8880,6 +11228,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                             key="sidebar_header_logout_btn",
                             help="Sign out",
                             icon=":material/logout:",
+                            type="tertiary",
                         ):
                             logout_current_user()
                             st.rerun()
@@ -8890,6 +11239,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
 
             if user_menu_open:
                 with st.container(key="sidebar_nav_menu"):
+                    feature_flags = get_dashboard_feature_flags()
                     if st.button("Recent Chats", key="sidebar_nav_chats", use_container_width=True):
                         st.session_state.dashboard_view = "chats"
                         st.session_state.bot_open = False
@@ -8897,25 +11247,38 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                     if st.button("Recent Scores", key="sidebar_nav_scores", use_container_width=True):
                         st.session_state.dashboard_view = "scores"
                         st.rerun()
-                    has_analysis = bool(st.session_state.get("analysis_result"))
-                    coding_button_label = "AI Coding Room" if has_analysis else "AI Coding Room (Locked)"
-                    if st.button(
-                        coding_button_label,
-                        key="sidebar_nav_coding_room",
-                        use_container_width=True,
-                        disabled=not has_analysis,
-                    ):
-                        st.session_state.dashboard_view = "coding_room"
-                        st.session_state.bot_open = False
-                        st.rerun()
-                    if st.button("AI Workspace", key="sidebar_nav_ai_workspace", use_container_width=True):
-                        st.session_state.dashboard_view = "ai_workspace"
-                        st.session_state.bot_open = False
-                        st.rerun()
-                    if st.button("ZoSwi Careers", key="sidebar_nav_careers", use_container_width=True):
-                        st.session_state.dashboard_view = "careers"
-                        st.session_state.bot_open = False
-                        st.rerun()
+                    if feature_flags.get("coding_room", False):
+                        has_analysis = bool(st.session_state.get("analysis_result"))
+                        coding_button_label = "AI Coding Room" if has_analysis else "AI Coding Room (Locked)"
+                        if st.button(
+                            coding_button_label,
+                            key="sidebar_nav_coding_room",
+                            use_container_width=True,
+                            disabled=not has_analysis,
+                        ):
+                            st.session_state.dashboard_view = "coding_room"
+                            st.session_state.bot_open = False
+                            st.rerun()
+                    if feature_flags.get("ai_workspace", False):
+                        if st.button("ZoSwi Live Workspace", key="sidebar_nav_ai_workspace", use_container_width=True):
+                            st.session_state.dashboard_view = "ai_workspace"
+                            st.session_state.bot_open = False
+                            st.rerun()
+                    if feature_flags.get("careers", False):
+                        if st.button("ZoSwi Careers", key="sidebar_nav_careers", use_container_width=True):
+                            st.session_state.dashboard_view = "careers"
+                            st.session_state.bot_open = False
+                            st.rerun()
+                    if feature_flags.get("live_interview", False):
+                        if st.button("Live AI Interview", key="sidebar_nav_live_interview", use_container_width=True):
+                            st.session_state.dashboard_view = "live_interview"
+                            st.session_state.bot_open = False
+                            st.rerun()
+                    if feature_flags.get("immigration_updates", False):
+                        if st.button("Immigration Updates", key="sidebar_nav_immigration_updates", use_container_width=True):
+                            st.session_state.dashboard_view = "immigration_updates"
+                            st.session_state.bot_open = False
+                            st.rerun()
                     if st.button("Home", key="sidebar_nav_home", use_container_width=True):
                         st.session_state.dashboard_view = "home"
                         st.rerun()
@@ -9050,6 +11413,7 @@ def render_home_dashboard(user: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
         action_cols = st.columns(2, gap="small")
+        coding_room_feature_enabled = is_dashboard_module_enabled("coding_room")
         with action_cols[0]:
             panel_open = bool(st.session_state.get("resume_export_panel_open"))
             toggle_label = "Resume Add Points" if not panel_open else "Hide Resume Add Points"
@@ -9057,11 +11421,12 @@ def render_home_dashboard(user: dict[str, Any]) -> None:
                 if st.button(toggle_label, key="home_resume_add_points_toggle_btn", use_container_width=False):
                     st.session_state.resume_export_panel_open = not panel_open
         with action_cols[1]:
-            with st.container(key="home_launch_coding_room_btn"):
-                if st.button("Start 3-Stage AI Coding Room", key="home_open_coding_room_btn", use_container_width=False):
-                    st.session_state.dashboard_view = "coding_room"
-                    st.session_state.bot_open = False
-                    st.rerun()
+            if coding_room_feature_enabled:
+                with st.container(key="home_launch_coding_room_btn"):
+                    if st.button("Start 3-Stage AI Coding Room", key="home_open_coding_room_btn", use_container_width=False):
+                        st.session_state.dashboard_view = "coding_room"
+                        st.session_state.bot_open = False
+                        st.rerun()
         render_resume_export_assistant(show_toggle_button=False)
         st.caption("ZoSwi is available in the round memoji button at the bottom-right.")
 
@@ -9123,6 +11488,7 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
         active_chat_id = initial_session_id
     if not st.session_state.get("bot_messages"):
         st.session_state.bot_messages = default_bot_messages(full_name)
+    ensure_quick_links_in_message_state("bot_messages")
     if st.session_state.get("clear_full_chat_input"):
         st.session_state.full_chat_input = ""
         st.session_state.clear_full_chat_input = False
@@ -9172,7 +11538,7 @@ def render_recent_chats_view(user: dict[str, Any]) -> None:
         with right_col:
             with st.container(key="full_chat_panel"):
                 st.markdown("#### ZoSwi Live Chat")
-                st.caption(f"{time_based_greeting()}, {first_name}")
+                st.caption("Recent conversation history")
 
                 with st.container(height=full_chat_height):
                     chat_history_container = st.container()
@@ -9268,14 +11634,36 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
 
     return _impl(user)
 
+
+def render_live_interview_view(user: dict[str, Any]) -> None:
+    from src.ui.pages.live_interview_page import render_live_interview_view as _impl
+
+    return _impl(user)
+
+
+def render_immigration_updates_view(user: dict[str, Any]) -> None:
+    from src.ui.pages.immigration_updates import render_immigration_updates_view as _impl
+
+    return _impl(user)
+
 def render_main_screen() -> None:
     user = st.session_state.user
+    query_view = pop_dashboard_view_from_query_params()
+    if query_view:
+        st.session_state.dashboard_view = query_view
     render_app_styles()
     render_top_left_logo()
+    render_global_music_bar()
     sync_bot_for_logged_in_user()
+    ensure_quick_links_in_message_state("bot_messages")
+    ensure_quick_links_in_message_state("ai_workspace_messages")
     render_candidate_sidebar(user)
 
     view = str(st.session_state.get("dashboard_view", "home")).strip().lower()
+    if not is_dashboard_module_enabled(view):
+        st.session_state.dashboard_view = "home"
+        view = "home"
+
     if view == "chats":
         st.session_state.bot_open = False
         render_recent_chats_view(user)
@@ -9298,6 +11686,16 @@ def render_main_screen() -> None:
     if view == "coding_room":
         st.session_state.bot_open = False
         render_coding_room_view(user)
+        render_zoswi_outside_minimize_listener(False)
+        return
+    if view == "live_interview":
+        st.session_state.bot_open = False
+        render_live_interview_view(user)
+        render_zoswi_outside_minimize_listener(False)
+        return
+    if view == "immigration_updates":
+        st.session_state.bot_open = False
+        render_immigration_updates_view(user)
         render_zoswi_outside_minimize_listener(False)
         return
 

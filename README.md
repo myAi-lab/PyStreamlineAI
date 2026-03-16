@@ -1,3 +1,2 @@
-# PyStreamlineAI
-Resume AI Checker ZoSwi AI.
 
+Resume AI Checker ZoSwi AI.
