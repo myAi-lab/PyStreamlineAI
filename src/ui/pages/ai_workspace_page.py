@@ -250,21 +250,23 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             flex-wrap: nowrap !important;
         }
         .st-key-ai_workspace_insert_wrap [data-baseweb="select"] > div {
-            min-height: 1.9rem !important;
+            min-height: 1.78rem !important;
             border-radius: 12px !important;
             border: 1px solid #bfdbfe !important;
             background: #ffffff !important;
             box-shadow: 0 1px 2px rgba(2, 132, 199, 0.08) !important;
         }
         .st-key-ai_workspace_insert_wrap [data-baseweb="select"] span {
-            font-size: 0.78rem !important;
+            font-size: 0.74rem !important;
             font-weight: 600 !important;
         }
         .st-key-ai_workspace_insert_btn button {
-            min-height: 1.9rem !important;
+            min-height: 1.72rem !important;
             border-radius: 10px !important;
-            padding: 0.06rem 0.72rem !important;
-            font-size: 0.74rem !important;
+            padding: 0.04rem 0.62rem !important;
+            font-size: 0.7rem !important;
+            line-height: 1.05 !important;
+            white-space: nowrap !important;
             font-weight: 800 !important;
             border: 1px solid #bfdbfe !important;
             background: linear-gradient(180deg, #ffffff 0%, #eff6ff 100%) !important;
@@ -272,10 +274,12 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             box-shadow: 0 1px 2px rgba(30, 58, 138, 0.1) !important;
         }
         .st-key-ai_workspace_insert_send_btn button {
-            min-height: 1.9rem !important;
+            min-height: 1.72rem !important;
             border-radius: 10px !important;
-            padding: 0.06rem 0.76rem !important;
-            font-size: 0.74rem !important;
+            padding: 0.04rem 0.66rem !important;
+            font-size: 0.7rem !important;
+            line-height: 1.05 !important;
+            white-space: nowrap !important;
             font-weight: 800 !important;
             border: 1px solid #14b8a6 !important;
             background: linear-gradient(135deg, #14b8a6 0%, #0ea5e9 100%) !important;
@@ -862,7 +866,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
         with st.container(key="ai_workspace_chat_wrap"):
-            header_cols = st.columns([9.1, 0.9], gap="small")
+            header_cols = st.columns([5.4, 1.4], gap="small") if is_mobile else st.columns([9.1, 0.9], gap="small")
             with header_cols[0]:
                 st.markdown(
                     """
@@ -995,8 +999,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         upload_widget_key = f"ai_workspace_input_file_upload_{upload_nonce}"
         attached_name_preview = ""
         with st.container(key="ai_workspace_input_wrap"):
-            row_cols = st.columns([0.9, 7.6, 1.5], gap="small") if is_mobile else st.columns([0.54, 8.72, 0.74], gap="small")
-            with row_cols[0]:
+            if is_mobile:
                 with st.container(key="ai_workspace_prefix_wrap"):
                     attached_file = st.file_uploader(
                         "Attach file",
@@ -1009,28 +1012,61 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                         attached_name_preview = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
                         if len(attached_name_preview) > 64:
                             attached_name_preview = f"{attached_name_preview[:61]}..."
-            with row_cols[1]:
-                message = st.text_input(
-                    "Message ZoSwi Live Workspace",
-                    key="ai_workspace_input",
-                    on_change=request_ai_workspace_submit,
-                    placeholder="Ask anything...",
-                    label_visibility="collapsed",
-                    disabled=waiting_for_reply,
-                )
-            with row_cols[2]:
-                send = st.button(
-                    "\u2191",
-                    key="ai_workspace_send_btn",
-                    use_container_width=True,
-                    help="Send",
-                    disabled=waiting_for_reply,
-                )
+                message_col, send_col = st.columns([6.8, 1.2], gap="small")
+                with message_col:
+                    message = st.text_input(
+                        "Message ZoSwi Live Workspace",
+                        key="ai_workspace_input",
+                        on_change=request_ai_workspace_submit,
+                        placeholder="Ask anything...",
+                        label_visibility="collapsed",
+                        disabled=waiting_for_reply,
+                    )
+                with send_col:
+                    send = st.button(
+                        "\u2191",
+                        key="ai_workspace_send_btn",
+                        use_container_width=True,
+                        help="Send",
+                        disabled=waiting_for_reply,
+                    )
+            else:
+                row_cols = st.columns([0.54, 8.72, 0.74], gap="small")
+                with row_cols[0]:
+                    with st.container(key="ai_workspace_prefix_wrap"):
+                        attached_file = st.file_uploader(
+                            "Attach file",
+                            key=upload_widget_key,
+                            type=AI_WORKSPACE_FILE_TYPES,
+                            label_visibility="collapsed",
+                            disabled=waiting_for_reply,
+                        )
+                        if attached_file is not None:
+                            attached_name_preview = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
+                            if len(attached_name_preview) > 64:
+                                attached_name_preview = f"{attached_name_preview[:61]}..."
+                with row_cols[1]:
+                    message = st.text_input(
+                        "Message ZoSwi Live Workspace",
+                        key="ai_workspace_input",
+                        on_change=request_ai_workspace_submit,
+                        placeholder="Ask anything...",
+                        label_visibility="collapsed",
+                        disabled=waiting_for_reply,
+                    )
+                with row_cols[2]:
+                    send = st.button(
+                        "\u2191",
+                        key="ai_workspace_send_btn",
+                        use_container_width=True,
+                        help="Send",
+                        disabled=waiting_for_reply,
+                    )
 
         clear_attachment_clicked = False
         if attached_file is not None:
             with attachment_hint_placeholder.container(key="ai_workspace_attachment_hint_wrap"):
-                attach_cols = st.columns([1.0, 0.08], gap="small")
+                attach_cols = st.columns([4.8, 1.2], gap="small") if is_mobile else st.columns([1.0, 0.08], gap="small")
                 with attach_cols[0]:
                     st.markdown(
                         f'<div class="aiws-attach-hint">Attached: {html.escape(attached_name_preview)}</div>',

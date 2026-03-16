@@ -677,7 +677,11 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
     question_sample_case = str(stage.get("sample_case", "")).strip()
 
     with st.container(key="coding_main_cols_wrap"):
-        left_col, right_col = st.columns([0.96, 1.34], gap="medium")
+        if is_mobile:
+            left_col = st.container()
+            right_col = st.container()
+        else:
+            left_col, right_col = st.columns([0.96, 1.34], gap="medium")
     with left_col:
         st.markdown(
             f"""
@@ -726,16 +730,24 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
                 render_zoswi_autoscroll()
                 st.session_state.coding_room_scroll_pending = False
 
-        action_cols = st.columns(3, gap="small")
-        with action_cols[0]:
+        if is_mobile:
             with st.container(key="coding_action_ready"):
                 ready_clicked = st.button("\U0001F60A I am ready", key="coding_action_ready_btn", use_container_width=True)
-        with action_cols[1]:
             with st.container(key="coding_action_hint"):
                 hint_clicked = st.button("\U0001F914 Give hint", key="coding_action_hint_btn", use_container_width=True)
-        with action_cols[2]:
             with st.container(key="coding_action_nudge"):
                 nudge_clicked = st.button("\u23ED Move forward", key="coding_action_nudge_btn", use_container_width=True)
+        else:
+            action_cols = st.columns(3, gap="small")
+            with action_cols[0]:
+                with st.container(key="coding_action_ready"):
+                    ready_clicked = st.button("\U0001F60A I am ready", key="coding_action_ready_btn", use_container_width=True)
+            with action_cols[1]:
+                with st.container(key="coding_action_hint"):
+                    hint_clicked = st.button("\U0001F914 Give hint", key="coding_action_hint_btn", use_container_width=True)
+            with action_cols[2]:
+                with st.container(key="coding_action_nudge"):
+                    nudge_clicked = st.button("\u23ED Move forward", key="coding_action_nudge_btn", use_container_width=True)
 
         pending_action = ""
         pending_user_message = ""
@@ -752,8 +764,7 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
             append_coding_room_message("user", pending_user_message)
 
         with st.container(key="coding_room_input_wrap"):
-            input_cols = st.columns([8.2, 1.8]) if is_mobile else st.columns([9, 1])
-            with input_cols[0]:
+            if is_mobile:
                 candidate_message = st.text_input(
                     "Message interviewer",
                     key="coding_room_user_input",
@@ -761,8 +772,19 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
                     label_visibility="collapsed",
                     placeholder="Tell your approach or ask clarifications...",
                 )
-            with input_cols[1]:
                 send_message = st.button("\u2191", key="coding_room_send_btn", use_container_width=True, help="Send")
+            else:
+                input_cols = st.columns([9, 1])
+                with input_cols[0]:
+                    candidate_message = st.text_input(
+                        "Message interviewer",
+                        key="coding_room_user_input",
+                        on_change=request_coding_room_submit,
+                        label_visibility="collapsed",
+                        placeholder="Tell your approach or ask clarifications...",
+                    )
+                with input_cols[1]:
+                    send_message = st.button("\u2191", key="coding_room_send_btn", use_container_width=True, help="Send")
 
         submit_requested = bool(send_message) or bool(st.session_state.get("coding_room_submit"))
         if submit_requested:
@@ -955,8 +977,7 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
 
         has_stage_score = stage_key in stage_scores
         can_go_next = timer_expired or (approach_ok and has_stage_score)
-        action_row = st.columns(3, gap="small")
-        with action_row[0]:
+        if is_mobile:
             with st.container(key="coding_eval_btn"):
                 evaluate_clicked = st.button(
                     "Evaluate Stage",
@@ -964,7 +985,6 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
                     use_container_width=True,
                     disabled=timer_expired,
                 )
-        with action_row[1]:
             with st.container(key="coding_next_stage_btn"):
                 next_label = "Next Stage" if stage_index < total_stages - 1 else "Finish Evaluation"
                 next_clicked = st.button(
@@ -973,13 +993,38 @@ def render_coding_room_view(user: dict[str, Any]) -> None:
                     use_container_width=True,
                     disabled=not can_go_next,
                 )
-        with action_row[2]:
             with st.container(key="coding_reset_session_btn"):
                 reset_clicked = st.button(
                     "Reset Session",
                     key=f"coding_reset_session_main_btn_{stage_index}",
                     use_container_width=True,
                 )
+        else:
+            action_row = st.columns(3, gap="small")
+            with action_row[0]:
+                with st.container(key="coding_eval_btn"):
+                    evaluate_clicked = st.button(
+                        "Evaluate Stage",
+                        key=f"coding_eval_stage_btn_{stage_index}",
+                        use_container_width=True,
+                        disabled=timer_expired,
+                    )
+            with action_row[1]:
+                with st.container(key="coding_next_stage_btn"):
+                    next_label = "Next Stage" if stage_index < total_stages - 1 else "Finish Evaluation"
+                    next_clicked = st.button(
+                        next_label,
+                        key=f"coding_next_stage_btn_{stage_index}",
+                        use_container_width=True,
+                        disabled=not can_go_next,
+                    )
+            with action_row[2]:
+                with st.container(key="coding_reset_session_btn"):
+                    reset_clicked = st.button(
+                        "Reset Session",
+                        key=f"coding_reset_session_main_btn_{stage_index}",
+                        use_container_width=True,
+                    )
         if not timer_expired:
             st.caption("Evaluate Stage runs hidden tests automatically in the backend.")
         else:

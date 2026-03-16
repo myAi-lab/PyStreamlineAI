@@ -2,6 +2,103 @@ from __future__ import annotations
 
 # Transitional extraction: page rendering moved out of app_runtime.
 from src.app_runtime import *  # noqa: F401,F403
+from urllib.parse import quote_plus
+
+
+def _resolve_resume_role_hint(resume_text: str, role_query: str) -> str:
+    clean_role = re.sub(r"\s+", " ", str(role_query or "").strip())
+    if clean_role:
+        return clean_role
+
+    resume_lower = str(resume_text or "").lower()
+    role_patterns: list[tuple[str, str]] = [
+        ("machine learning engineer", "Machine Learning Engineer"),
+        ("data scientist", "Data Scientist"),
+        ("data engineer", "Data Engineer"),
+        ("frontend engineer", "Frontend Engineer"),
+        ("front end engineer", "Frontend Engineer"),
+        ("backend engineer", "Backend Engineer"),
+        ("back end engineer", "Backend Engineer"),
+        ("full stack", "Full Stack Engineer"),
+        ("software engineer", "Software Engineer"),
+        ("devops engineer", "DevOps Engineer"),
+        ("site reliability engineer", "Site Reliability Engineer"),
+        ("qa engineer", "QA Engineer"),
+        ("product manager", "Product Manager"),
+        ("business analyst", "Business Analyst"),
+    ]
+    for pattern, label in role_patterns:
+        if pattern in resume_lower:
+            return label
+
+    skills = extract_top_technical_skills(str(resume_text or ""), "", limit=1)
+    if skills:
+        return f"{skills[0]} Engineer"
+    return "Software Engineer"
+
+
+def render_top_company_career_links(
+    resume_text: str,
+    role_query: str,
+    preferred_location: str,
+    visa_status: str,
+    sponsorship_required: bool,
+    selected_position_types: list[str],
+) -> None:
+    role_hint = _resolve_resume_role_hint(resume_text, role_query)
+    clean_location = re.sub(r"\s+", " ", str(preferred_location or "").strip())
+    safe_types = [re.sub(r"\s+", " ", str(item).strip()) for item in (selected_position_types or []) if str(item).strip()]
+
+    query_tokens: list[str] = [role_hint]
+    query_tokens.extend(safe_types[:2])
+    query_text = " ".join(token for token in query_tokens if token).strip() or "software engineer"
+
+    role_token = quote_plus(query_text)
+    location_token = quote_plus(clean_location)
+
+    company_links = [
+        {
+            "name": "Google",
+            "url": (
+                f"https://careers.google.com/jobs/results/?q={role_token}"
+                + (f"&location={location_token}" if location_token else "")
+            ),
+        },
+        {
+            "name": "Apple",
+            "url": (
+                f"https://jobs.apple.com/en-us/search?search={role_token}"
+                + (f"&location={location_token}" if location_token else "")
+            ),
+        },
+        {
+            "name": "Microsoft",
+            "url": (
+                f"https://jobs.careers.microsoft.com/global/en/search?q={role_token}"
+                + (f"&l={location_token}" if location_token else "")
+            ),
+        },
+        {
+            "name": "Amazon",
+            "url": (
+                f"https://www.amazon.jobs/en/search?base_query={role_token}"
+                + (f"&loc_query={location_token}" if location_token else "")
+            ),
+        },
+        {"name": "Meta", "url": f"https://www.metacareers.com/jobs/?q={role_token}"},
+        {"name": "NVIDIA", "url": f"https://www.nvidia.com/en-us/about-nvidia/careers/?keyword={role_token}"},
+        {"name": "Adobe", "url": f"https://careers.adobe.com/us/en/search-results?keywords={role_token}"},
+        {"name": "Salesforce", "url": f"https://careers.salesforce.com/en/jobs/?keywords={role_token}"},
+    ]
+
+    location_label = clean_location or "Any location"
+    st.markdown("#### Top Company Career Links")
+    st.caption(f"Generated from Career Match Studio filters. Role: {role_hint} | Location: {location_label}")
+    cols_per_row = 1 if is_mobile_browser() else 4
+    cols = st.columns(cols_per_row, gap="small")
+    for idx, item in enumerate(company_links):
+        with cols[idx % cols_per_row]:
+            st.markdown(f"[{item['name']} Careers]({item['url']})")
 
 def render_careers_profile_setup() -> None:
     is_mobile = is_mobile_browser()
@@ -15,7 +112,20 @@ def render_careers_profile_setup() -> None:
     )
     st.markdown(
         """
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;margin:0.15rem 0 0.55rem 0;">
+        <style>
+        .careers-mode-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.55rem;
+            margin: 0.15rem 0 0.55rem 0;
+        }
+        @media (max-width: 900px) {
+            .careers-mode-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        </style>
+        <div class="careers-mode-grid">
             <div style="border:1px solid #bae6fd;border-radius:12px;padding:0.52rem 0.62rem;background:#f0f9ff;">
                 <p style="margin:0;color:#075985;font-size:0.78rem;font-weight:800;letter-spacing:0.01em;">Resume + JD</p>
                 <p style="margin:0.22rem 0 0 0;color:#0f172a;font-size:0.79rem;line-height:1.35;">
@@ -542,10 +652,7 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
     last_error = sanitize_job_search_error_message(str(st.session_state.get("job_search_last_error", "")).strip())
     st.session_state.job_search_last_error = last_error
     if last_error:
-        if isinstance(results, list) and results:
-            st.info(last_error)
-        else:
-            st.warning(last_error)
+        st.caption(last_error)
 
     if isinstance(results, list) and results:
         st.markdown("#### Recommended Jobs")
@@ -560,7 +667,11 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
             resume_match_score = int(item.get("resume_match_score", 0) or 0)
             sponsorship_status = str(item.get("sponsorship_status", "")).strip() or "Unknown"
             sponsorship_confidence = int(item.get("sponsorship_confidence", 0) or 0)
+            role_relevance = int(item.get("role_relevance", 0) or 0)
             reason = str(item.get("reason", "")).strip()
+            missing_points = item.get("missing_points", [])
+            if not isinstance(missing_points, list):
+                missing_points = []
             apply_url = str(item.get("apply_url", "")).strip()
             position_tags = item.get("position_tags", [])
             if not isinstance(position_tags, list):
@@ -588,23 +699,43 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
                 st.caption(f"Resume match: {resume_match_score}%")
                 st.caption(f"Sponsorship: {sponsorship_status}")
                 st.caption(f"Sponsorship confidence: {sponsorship_confidence}%")
+                st.caption(f"Role relevance: {role_relevance}%")
             else:
-                detail_cols = st.columns(3, gap="small")
+                detail_cols = st.columns(4, gap="small")
                 with detail_cols[0]:
                     st.caption(f"Resume match: {resume_match_score}%")
                 with detail_cols[1]:
                     st.caption(f"Sponsorship: {sponsorship_status}")
                 with detail_cols[2]:
                     st.caption(f"Sponsorship confidence: {sponsorship_confidence}%")
+                with detail_cols[3]:
+                    st.caption(f"Role relevance: {role_relevance}%")
             st.caption(f"Position types: {position_tags_text}")
             if reason:
                 st.caption(reason)
+            if missing_points:
+                st.markdown("**Resume boost suggestions:**")
+                for tip in missing_points[:3]:
+                    safe_tip = str(tip).strip()
+                    if safe_tip:
+                        st.caption(f"- {safe_tip}")
             if apply_url:
                 st.markdown(f"[Apply Now]({apply_url})")
             else:
                 st.caption("Apply URL not available in this posting.")
             if idx < len(results) - 1:
                 st.markdown("---")
+    else:
+        st.info("No strong matches from current APIs yet. Try direct company portals below.")
+
+    render_top_company_career_links(
+        resume_text=str(resume_text or ""),
+        role_query=str(role_query or ""),
+        preferred_location=str(preferred_location or ""),
+        visa_status=str(visa_status or ""),
+        sponsorship_required=bool(sponsorship_required),
+        selected_position_types=selected_position_types if isinstance(selected_position_types, list) else [],
+    )
 
     recent_searches = get_recent_job_search_history(user_id, limit=5)
     if recent_searches:

@@ -68,6 +68,73 @@ def render_app_styles() -> None:
             font-size: 0.92rem;
             margin: 0 0 4px 0;
         }
+        .st-key-global_music_bar {
+            position: fixed;
+            top: 5.2rem;
+            right: 0.85rem;
+            z-index: 1005;
+            width: min(350px, calc(100vw - 1.35rem));
+            border: 1px solid rgba(191, 219, 254, 0.9);
+            border-radius: 14px;
+            padding: 0.34rem 0.5rem 0.42rem 0.5rem;
+            background: linear-gradient(120deg, rgba(255, 255, 255, 0.72) 0%, rgba(239, 246, 255, 0.68) 100%);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+        }
+        .st-key-global_music_bar [data-testid="stVerticalBlock"] {
+            gap: 0.28rem !important;
+        }
+        .st-key-global_music_bar .zoswi-music-title {
+            margin: 0;
+            color: #334155;
+            font-size: 0.74rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+        .st-key-global_music_search_row [data-testid="stHorizontalBlock"] {
+            align-items: center !important;
+        }
+        .st-key-global_music_search_input [data-testid="stTextInputRootElement"] input {
+            min-height: 1.95rem !important;
+            border-radius: 10px !important;
+            border: 1px solid #bfdbfe !important;
+            background: rgba(255, 255, 255, 0.92) !important;
+            padding: 0.2rem 0.58rem !important;
+            font-size: 0.82rem !important;
+        }
+        .st-key-global_music_search_btn_wrap button {
+            min-height: 1.95rem !important;
+            border-radius: 10px !important;
+            border: 1px solid #0ea5e9 !important;
+            background: linear-gradient(120deg, #e0f2fe 0%, #dbeafe 100%) !important;
+            color: #0c4a6e !important;
+            font-size: 0.78rem !important;
+            font-weight: 800 !important;
+            box-shadow: none !important;
+            padding: 0.18rem 0.46rem !important;
+        }
+        .st-key-global_music_search_btn_wrap button:hover {
+            border-color: #0284c7 !important;
+            background: linear-gradient(120deg, #dbeafe 0%, #bfdbfe 100%) !important;
+            color: #0f172a !important;
+        }
+        .st-key-global_music_bar [data-baseweb="select"] > div {
+            min-height: 1.95rem !important;
+            border-radius: 10px !important;
+            border: 1px solid #bfdbfe !important;
+            background: rgba(255, 255, 255, 0.9) !important;
+        }
+        .st-key-global_music_bar [data-baseweb="select"] * {
+            font-size: 0.82rem !important;
+            color: #0f172a !important;
+        }
+        .st-key-global_music_bar audio {
+            width: 100%;
+            height: 34px;
+            border-radius: 10px;
+        }
         .st-key-oauth_social_stack {
             margin-top: 0;
         }
@@ -78,6 +145,9 @@ def render_app_styles() -> None:
             margin-top: clamp(2.6rem, 11vh, 8rem);
         }
         @media (max-width: 980px) {
+            .st-key-global_music_bar {
+                display: none !important;
+            }
             .st-key-oauth_motivation_popup {
                 margin-top: 1.25rem;
             }
