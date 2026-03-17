@@ -259,6 +259,9 @@ ZOSWI_DASHBOARD_FEATURE_FLAGS: dict[str, tuple[str, str]] = {
     "coding_room": (ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED_KEY, "ai_coding_room_enabled"),
     "live_interview": (ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED_KEY, "live_ai_interview_enabled"),
 }
+ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_KEY = "ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT"
+ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_DEFAULT = "Zoswi Entitlement"
+ZOSWI_PRODUCTION_ENV_NAMES = {"prod", "production", "prd", "live"}
 JOB_SEARCH_MAX_RESULTS_DEFAULT = 5
 JOB_SEARCH_MAX_RESULTS_LIMIT = 15
 JOB_SEARCH_FETCH_CACHE_TTL_SECONDS = 300
@@ -779,6 +782,133 @@ def is_global_music_enabled() -> bool:
     return parse_bool(config_value, default=False)
 
 
+def normalize_entitlement_token(raw_value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", str(raw_value or "").strip().lower())
+    return cleaned.strip("_")
+
+
+def normalize_runtime_environment(raw_value: str) -> str:
+    cleaned = normalize_entitlement_token(raw_value)
+    mapping = {
+        "production": "prod",
+        "prd": "prod",
+        "live": "prod",
+        "development": "dev",
+        "local": "dev",
+        "stage": "staging",
+    }
+    return mapping.get(cleaned, cleaned)
+
+
+def get_runtime_environment() -> str:
+    configured = get_config_value("APP_ENV", "app", "environment", "")
+    if not configured:
+        configured = str(os.getenv("ENVIRONMENT", "") or os.getenv("STAGE", "") or os.getenv("DEPLOY_ENV", "")).strip()
+    return normalize_runtime_environment(configured)
+
+
+def is_production_environment() -> bool:
+    env_name = normalize_runtime_environment(get_runtime_environment())
+    return env_name in ZOSWI_PRODUCTION_ENV_NAMES
+
+
+def get_prod_full_access_entitlement_token() -> str:
+    configured = get_config_value(
+        ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_KEY,
+        "entitlements",
+        "prod_full_access_entitlement",
+        ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_DEFAULT,
+    )
+    normalized = normalize_entitlement_token(configured)
+    if normalized:
+        return normalized
+    return normalize_entitlement_token(ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_DEFAULT)
+
+
+def entitlement_environment_matches_runtime(raw_environment: str, runtime_environment: str) -> bool:
+    normalized = normalize_runtime_environment(raw_environment)
+    if normalized in {"", "all", "global", "any", "*"}:
+        return True
+    if not runtime_environment:
+        return False
+    return normalized == runtime_environment
+
+
+def get_user_entitlement_tokens(user_id: int) -> set[str]:
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return set()
+    runtime_environment = get_runtime_environment()
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT entitlement_name, environment
+            FROM user_entitlements
+            WHERE user_id = ? AND is_active = 1
+            """,
+            (safe_user_id,),
+        ).fetchall()
+    except Exception:
+        return set()
+    finally:
+        conn.close()
+
+    tokens: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            raw_name = str(row.get("entitlement_name", "") or "")
+            raw_env = str(row.get("environment", "") or "")
+        else:
+            raw_name = str(row[0] if row and len(row) > 0 else "")
+            raw_env = str(row[1] if row and len(row) > 1 else "")
+        if not entitlement_environment_matches_runtime(raw_env, runtime_environment):
+            continue
+        normalized = normalize_entitlement_token(raw_name)
+        if normalized:
+            tokens.add(normalized)
+    return tokens
+
+
+def get_user_entitlement_tokens_from_user(user: dict[str, Any] | None) -> set[str]:
+    if not isinstance(user, dict):
+        return set()
+
+    tokens: set[str] = set()
+    has_embedded_entitlements = "entitlements" in user
+    raw_entitlements = user.get("entitlements", [])
+    if isinstance(raw_entitlements, str):
+        raw_entitlements = [raw_entitlements]
+    if isinstance(raw_entitlements, (list, tuple, set)):
+        for item in raw_entitlements:
+            normalized = normalize_entitlement_token(str(item or ""))
+            if normalized:
+                tokens.add(normalized)
+    if has_embedded_entitlements:
+        return tokens
+
+    return get_user_entitlement_tokens(int(user.get("id") or 0))
+
+
+def enrich_user_with_entitlements(user: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(user, dict):
+        return user
+    enriched = dict(user)
+    enriched["entitlements"] = sorted(get_user_entitlement_tokens(int(enriched.get("id") or 0)))
+    return enriched
+
+
+def has_prod_full_access_entitlement(user: dict[str, Any] | None = None) -> bool:
+    if not is_production_environment():
+        return False
+    required = get_prod_full_access_entitlement_token()
+    if not required:
+        return False
+    candidate = user if isinstance(user, dict) else st.session_state.get("user")
+    return required in get_user_entitlement_tokens_from_user(candidate if isinstance(candidate, dict) else None)
+
+
 def get_dashboard_feature_flags() -> dict[str, bool]:
     flags: dict[str, bool] = {}
     for view_name, (setting_key, secret_key) in ZOSWI_DASHBOARD_FEATURE_FLAGS.items():
@@ -796,17 +926,25 @@ def get_dashboard_feature_flags() -> dict[str, bool]:
     return flags
 
 
+def get_effective_dashboard_feature_flags(user: dict[str, Any] | None = None) -> dict[str, bool]:
+    effective = dict(get_dashboard_feature_flags())
+    if has_prod_full_access_entitlement(user):
+        for view_name in ZOSWI_DASHBOARD_FEATURE_FLAGS:
+            effective[view_name] = True
+    return effective
+
+
 def is_dashboard_module_enabled(view_name: str) -> bool:
     normalized = normalize_dashboard_view(view_name)
     if not normalized:
         normalized = str(view_name or "").strip().lower().replace(" ", "_").replace("-", "_")
     if normalized in {"home", "chats", "scores"}:
         return True
-    return bool(get_dashboard_feature_flags().get(normalized, True))
+    return bool(get_effective_dashboard_feature_flags().get(normalized, True))
 
 
 def build_dashboard_module_status_summary() -> str:
-    flags = get_dashboard_feature_flags()
+    flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     labels = (
         ("Careers", "careers"),
         ("Live Workspace", "ai_workspace"),
@@ -1304,6 +1442,21 @@ def init_db() -> None:
     )
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS user_entitlements (
+            id {id_pk_sql},
+            user_id {fk_type} NOT NULL,
+            entitlement_name TEXT NOT NULL,
+            environment TEXT NOT NULL DEFAULT 'all',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, entitlement_name, environment),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS immigration_updates (
             id {id_pk_sql},
             title TEXT NOT NULL,
@@ -1381,6 +1534,28 @@ def init_db() -> None:
     if added_email_verified_col:
         conn.execute("UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL")
 
+    entitlement_cols = get_table_columns(conn, "user_entitlements")
+    if "environment" not in entitlement_cols:
+        conn.execute("ALTER TABLE user_entitlements ADD COLUMN environment TEXT")
+        conn.execute(
+            "UPDATE user_entitlements SET environment = 'all' WHERE environment IS NULL OR environment = ''"
+        )
+    if "is_active" not in entitlement_cols:
+        conn.execute("ALTER TABLE user_entitlements ADD COLUMN is_active INTEGER")
+        conn.execute("UPDATE user_entitlements SET is_active = 1 WHERE is_active IS NULL")
+    if "created_at" not in entitlement_cols:
+        conn.execute("ALTER TABLE user_entitlements ADD COLUMN created_at TEXT")
+        conn.execute(
+            "UPDATE user_entitlements SET created_at = ? WHERE created_at IS NULL OR created_at = ''",
+            (music_setting_now_iso,),
+        )
+    if "updated_at" not in entitlement_cols:
+        conn.execute("ALTER TABLE user_entitlements ADD COLUMN updated_at TEXT")
+        conn.execute(
+            "UPDATE user_entitlements SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''",
+            (music_setting_now_iso,),
+        )
+
     chat_cols = get_table_columns(conn, "chat_history")
     if "session_id" not in chat_cols:
         conn.execute(f"ALTER TABLE chat_history ADD COLUMN session_id {session_id_type}")
@@ -1424,6 +1599,9 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_login_events_login_at ON user_login_events(login_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_account_status ON users(account_status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_auth_provider_user_id ON users(auth_provider, auth_provider_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_entitlements_user_id ON user_entitlements(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_entitlements_environment ON user_entitlements(environment)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_entitlements_name ON user_entitlements(entitlement_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_user_id ON user_email_otp_events(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_email ON user_email_otp_events(email)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_email_otp_events_expires_at ON user_email_otp_events(expires_at)")
@@ -2856,18 +3034,20 @@ def get_auth_service() -> AuthService:
 
 def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
     repo = get_auth_repository()
-    return repo.authenticate_user(
+    user = repo.authenticate_user(
         email=email,
         password=password,
         verify_password=verify_password,
         is_modern_password_hash=is_modern_password_hash,
         hash_password=hash_password,
     )
+    return enrich_user_with_entitlements(user)
 
 
 def get_user_by_email(email: str) -> dict[str, Any] | None:
     repo = get_auth_repository()
-    return repo.get_user_by_email(email)
+    user = repo.get_user_by_email(email)
+    return enrich_user_with_entitlements(user)
 
 
 def parse_wait_seconds_from_message(message: str) -> int:
@@ -2970,7 +3150,7 @@ def get_user_for_auth_session(raw_token: str) -> dict[str, Any] | None:
             (now_iso, token_hash),
         )
         conn.commit()
-        return dict(row)
+        return enrich_user_with_entitlements(dict(row))
     finally:
         conn.close()
 
@@ -3261,7 +3441,7 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
                 """,
                 (int(row["id"]),),
             ).fetchone()
-            return dict(row)
+            return enrich_user_with_entitlements(dict(row))
 
         now_iso = datetime.now(timezone.utc).isoformat()
         random_password = secrets.token_urlsafe(24)
@@ -3291,14 +3471,16 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
         conn.commit()
         if user_id <= 0:
             return None
-        return {
+        return enrich_user_with_entitlements(
+            {
             "id": user_id,
             "full_name": full_name,
             "email": email,
             "role": "",
             "years_experience": "",
             "created_at": now_iso,
-        }
+            }
+        )
     finally:
         conn.close()
 
@@ -4212,7 +4394,7 @@ def build_zoswi_capability_response(message: str) -> str:
     text = re.sub(r"\s+", " ", str(message or "").strip().lower())
     analysis = st.session_state.get("analysis_result")
     has_analysis = isinstance(analysis, dict) and bool(analysis)
-    flags = get_dashboard_feature_flags()
+    flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     coding_room_enabled = flags.get("coding_room", False)
     coding_room_ready = bool(has_analysis) and coding_room_enabled
     live_workspace_enabled = flags.get("ai_workspace", False)
@@ -7070,7 +7252,7 @@ def render_zoswi_header_motivation_line(first_name: str) -> None:
 
 
 def build_zoswi_quick_links_line() -> str:
-    flags = get_dashboard_feature_flags()
+    flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     links = ["[Home](?nav=home)"]
     if flags.get("careers", False):
         links.append("[ZoSwi Careers](?nav=careers)")
@@ -11239,7 +11421,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
 
             if user_menu_open:
                 with st.container(key="sidebar_nav_menu"):
-                    feature_flags = get_dashboard_feature_flags()
+                    feature_flags = get_effective_dashboard_feature_flags(user)
                     if st.button("Recent Chats", key="sidebar_nav_chats", use_container_width=True):
                         st.session_state.dashboard_view = "chats"
                         st.session_state.bot_open = False

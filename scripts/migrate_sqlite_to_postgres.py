@@ -10,6 +10,7 @@ except Exception as exc:  # pragma: no cover
 
 TABLE_ORDER = [
     "users",
+    "user_entitlements",
     "signup_verification_requests",
     "chat_sessions",
     "analysis_history",
@@ -95,7 +96,7 @@ def main() -> None:
                     "app_settings, "
                     "signup_verification_requests, "
                     "user_login_events, auth_sessions, "
-                    "analysis_history, chat_sessions, users RESTART IDENTITY CASCADE"
+                    "analysis_history, chat_sessions, user_entitlements, users RESTART IDENTITY CASCADE"
                 )
 
         total = 0
