@@ -141,6 +141,29 @@ Resume AI Checker using Streamlit + LangChain + ZoSwiAI.
   ORDER BY login_count DESC, u.email;
   ```
 
+## User Entitlements (PROD)
+- Entitlements are stored in `user_entitlements`.
+- `entitlement_name = 'Zoswi Entitlement'` grants full dashboard access in production.
+- Production mode is detected from `APP_ENV` (or fallback env vars `ENVIRONMENT`, `STAGE`, `DEPLOY_ENV`) with values like `prod` / `production`.
+- Optional override: set `ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT` to change the entitlement name checked for full PROD access.
+- Example grant for a user:
+  ```sql
+  INSERT INTO user_entitlements (user_id, entitlement_name, environment, is_active, created_at, updated_at)
+  SELECT id, 'Zoswi Entitlement', 'prod', 1, NOW()::text, NOW()::text
+  FROM users
+  WHERE email = 'user@example.com'
+  ON CONFLICT (user_id, entitlement_name, environment)
+  DO UPDATE SET is_active = 1, updated_at = EXCLUDED.updated_at;
+  ```
+- Example revoke:
+  ```sql
+  UPDATE user_entitlements
+  SET is_active = 0, updated_at = NOW()::text
+  WHERE entitlement_name = 'Zoswi Entitlement' AND environment = 'prod' AND user_id = (
+      SELECT id FROM users WHERE email = 'user@example.com' LIMIT 1
+  );
+  ```
+
 ## Email Verification
 - Password signup now creates a pending request in `signup_verification_requests` (not a user account).
 - App sends a 6-digit OTP to the signup email using configured SMTP.
