@@ -53,3 +53,10 @@ export type InterviewResultResponse = {
   }>;
   evaluation_summary: EvaluationSignals | null;
 };
+
+export type WebSocketTokenResponse = {
+  ws_token: string;
+  token_type: "Bearer";
+  expires_in: number;
+  session_id: string;
+};

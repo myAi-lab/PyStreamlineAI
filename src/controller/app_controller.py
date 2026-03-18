@@ -21,6 +21,7 @@ def run_app_runtime(config: PageConfigDTO, handlers: AppRuntimeHandlersDTO) -> N
         handlers.bootstrap_runtime()
     handlers.init_state()
     handlers.try_restore_user_from_cookie()
+    handlers.sync_user_from_oauth_session()
     handlers.render_auth_cookie_sync()
 
     if handlers.get_current_user() is None:

@@ -2,7 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { getInterviewResult, getInterviewWebSocketUrl } from "../../lib/api";
+import {
+  createWebSocketToken,
+  getClientAccessToken,
+  getInterviewResult,
+  getInterviewWebSocketUrl,
+  startInterview as startInterviewSession
+} from "../../lib/api";
 import type { EvaluationSignals, InterviewResultResponse, TranscriptMessage } from "../../lib/types";
 
 import { CameraPreview } from "./CameraPreview";
@@ -507,8 +513,40 @@ export function InterviewClient() {
       streamRef.current = stream;
       const videoTracks = stream.getVideoTracks();
       setCameraPreviewStream(videoTracks.length > 0 ? new MediaStream(videoTracks) : null);
+      const accessToken = getClientAccessToken();
+      let preStartedSessionId = "";
+      try {
+        const startResponse = await startInterviewSession(
+          {
+            candidate_name: candidateName.trim(),
+            role: role.trim(),
+            interview_type: interviewType
+          },
+          accessToken || undefined
+        );
+        preStartedSessionId = String(startResponse.session_id || "").trim();
+      } catch {
+        // Backward-compatible fallback to websocket-driven start flow.
+      }
 
-      const socket = new WebSocket(getInterviewWebSocketUrl("/ws/interview"));
+      let wsToken = "";
+      if (preStartedSessionId) {
+        try {
+          const wsTokenResponse = await createWebSocketToken(preStartedSessionId, accessToken || undefined);
+          wsToken = String(wsTokenResponse.ws_token || "").trim();
+        } catch {
+          wsToken = "";
+        }
+      }
+
+      const wsParams: Record<string, string> = {};
+      if (preStartedSessionId) {
+        wsParams.session_id = preStartedSessionId;
+      }
+      if (wsToken) {
+        wsParams.ws_token = wsToken;
+      }
+      const socket = new WebSocket(getInterviewWebSocketUrl("/ws/interview", wsParams));
       websocketRef.current = socket;
 
       socket.onopen = async () => {
@@ -519,6 +557,7 @@ export function InterviewClient() {
         socket.send(
           JSON.stringify({
             type: "session_start",
+            session_id: preStartedSessionId || undefined,
             candidate_name: candidateName.trim(),
             role: role.trim(),
             interview_type: interviewType

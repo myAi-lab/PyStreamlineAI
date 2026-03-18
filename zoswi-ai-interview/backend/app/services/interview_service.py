@@ -1,8 +1,10 @@
 import uuid
 from dataclasses import dataclass
+from time import perf_counter
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
+from app.core.metrics import metrics_store
 from app.models.interview import InterviewStatus, TranscriptSpeaker
 from app.repositories.interview_repository import InterviewRepository
 from app.schemas.interview import (
@@ -15,6 +17,8 @@ from app.schemas.interview import (
     TranscriptItem,
 )
 from app.services.ai_service import AIService
+from app.services.interview_engine import InterviewEngine
+from app.services.scoring_engine import ScoringEngine
 
 settings = get_settings()
 
@@ -31,21 +35,46 @@ class LiveTurnResult:
 
 
 class InterviewService:
-    def __init__(self, repository: InterviewRepository, ai_service: AIService):
+    def __init__(
+        self,
+        repository: InterviewRepository,
+        ai_service: AIService,
+        interview_engine: InterviewEngine,
+        scoring_engine: ScoringEngine,
+    ):
         self.repository = repository
         self.ai_service = ai_service
+        self.interview_engine = interview_engine
+        self.scoring_engine = scoring_engine
 
     async def start_interview(
         self,
         payload: StartInterviewRequest,
         interview_type: str = "mixed",
+        owner_user_id: str = "",
+        org_id: str = "",
+        resume_text: str = "",
     ) -> StartInterviewResponse:
         normalized_type = self._normalize_interview_type(interview_type)
+        detected_domain = self.interview_engine.detect_domain(role=payload.role, resume_text=resume_text)
         session = await self.repository.create_session(
             candidate_name=payload.candidate_name,
             role=payload.role,
             interview_type=normalized_type,
             max_turns=settings.max_questions_per_interview,
+            owner_user_id=owner_user_id,
+            org_id=org_id,
+            domain=detected_domain,
+        )
+        plan_state = self.interview_engine.build_plan(role=payload.role, resume_text=resume_text)
+        await self.repository.create_or_update_plan(
+            session_id=session.id,
+            detected_domain=plan_state.detected_domain,
+            items=plan_state.items,
+            coverage_policy={
+                "required_competencies": [item.get("competency_key") for item in plan_state.items],
+                "must_cover": ["practical_implementation", "debugging", "architecture", "tradeoff_reasoning"],
+            },
         )
 
         opening_question = await self.ai_service.generate_opening_question(
@@ -81,12 +110,32 @@ class InterviewService:
         mime_type: str = "audio/webm",
         interview_type: str = "mixed",
     ) -> LiveTurnResult:
+        turn_started = perf_counter()
         normalized_type = self._normalize_interview_type(interview_type)
         session = await self.repository.get_session(session_id)
         if session is None:
             raise AppError(status_code=404, message="Interview session not found.")
         if session.status == InterviewStatus.completed:
             raise AppError(status_code=400, message="Interview session already completed.")
+        plan_items_db = await self.repository.get_plan_items(session_id)
+        if not plan_items_db:
+            built_plan = self.interview_engine.build_plan(role=session.role, resume_text="")
+            await self.repository.create_or_update_plan(
+                session_id=session_id,
+                detected_domain=built_plan.detected_domain,
+                items=built_plan.items,
+                coverage_policy={"must_cover": ["practical_implementation", "debugging", "architecture", "tradeoff_reasoning"]},
+            )
+            plan_items_db = await self.repository.get_plan_items(session_id)
+        plan_items = [
+            {
+                "competency_key": item.competency_key,
+                "target_turns": item.target_turns,
+                "covered_turns": item.covered_turns,
+                "priority": item.priority,
+            }
+            for item in plan_items_db
+        ]
 
         current_question = await self.repository.get_latest_ai_question(session_id)
         current_question_id = current_question.id if current_question else None
@@ -98,6 +147,7 @@ class InterviewService:
             db=self.repository.db,
         )
         if transcript.startswith("Audio could not") or transcript.startswith("Audio transcription"):
+            metrics_store.increment_stt_failure()
             retry_prompt = "I could not hear that clearly. Please answer the same question again."
             sequence_start = await self.repository.get_next_transcript_sequence(session_id)
             await self.repository.add_transcript(
@@ -157,6 +207,8 @@ class InterviewService:
 
         history = list(session.transcript_history or [])
         history.append({"speaker": "candidate", "text": transcript})
+        answer_quality_ok, answer_quality_score = self.interview_engine.assess_answer_quality(transcript)
+        target_competency = self.interview_engine.select_next_competency(plan_items)
         turn = await self.ai_service.generate_next_question_and_evaluation(
             role=session.role,
             current_question=current_question_text,
@@ -165,13 +217,26 @@ class InterviewService:
             db=self.repository.db,
             interview_type=normalized_type,
         )
+        is_follow_up = self.interview_engine.should_follow_up(answer_quality_ok, answer_quality_score)
+        if is_follow_up:
+            turn["next_question"] = self._build_follow_up_question(target_competency, current_question_text)
+            turn["summary_text"] = (
+                f"{turn['summary_text']} Follow-up was selected due to low answer quality ({answer_quality_score})."
+            ).strip()
 
         question_order = response_order + 1
-        completed = response_order >= session.max_turns
+        next_question = turn["next_question"]
+        previous_ai_questions = [item.get("text", "") for item in history if item.get("speaker") == "ai"]
+        if self.interview_engine.is_repeated_question(next_question, [str(item) for item in previous_ai_questions]):
+            next_question = self._build_fallback_competency_question(session.role, target_competency)
+
+        plan_items = self.interview_engine.update_coverage(plan_items, target_competency)
+        coverage_reached = self.interview_engine.coverage_reached(plan_items)
+        completed = response_order >= session.max_turns or coverage_reached
         next_question = (
             "Thank you for your time. This concludes the live interview."
             if completed
-            else turn["next_question"]
+            else next_question
         )
         await self.repository.add_ai_question(session_id=session_id, order=question_order, text=next_question)
         await self.repository.add_transcript(
@@ -185,6 +250,12 @@ class InterviewService:
         await self.repository.set_transcript_history(session, history)
         await self.repository.set_current_question(session, next_question)
         await self.repository.increment_turn(session)
+        await self.repository.create_or_update_plan(
+            session_id=session_id,
+            detected_domain=str(session.domain or ""),
+            items=plan_items,
+            coverage_policy={"must_cover": ["practical_implementation", "debugging", "architecture", "tradeoff_reasoning"]},
+        )
         await self.repository.set_evaluation_signals(
             session,
             {
@@ -193,6 +264,8 @@ class InterviewService:
                 "confidence": turn["confidence"],
                 "overall_rating": turn["overall_rating"],
                 "summary_text": turn["summary_text"],
+                "target_competency": target_competency,
+                "answer_quality_score": answer_quality_score,
             },
         )
         await self.repository.upsert_evaluation_summary(
@@ -204,11 +277,75 @@ class InterviewService:
             summary_text=turn["summary_text"],
             signals_json=session.evaluation_signals,
         )
+        latency_ms = int((perf_counter() - turn_started) * 1000)
+        turn_row = await self.repository.upsert_turn(
+            session_id=session_id,
+            question_id=current_question_id,
+            turn_no=response_order,
+            competency_key=target_competency,
+            candidate_transcript=transcript,
+            answer_quality_score=answer_quality_score,
+            is_follow_up=is_follow_up,
+            latency_ms=latency_ms,
+            stt_confidence=1.0 if answer_quality_ok else 0.4,
+        )
+        turn_score = self.scoring_engine.score_turn(
+            transcript_text=transcript,
+            evaluation_signals={
+                "technical_accuracy": turn["technical_accuracy"],
+                "communication_clarity": turn["communication_clarity"],
+                "confidence": turn["confidence"],
+            },
+            answer_quality_score=answer_quality_score,
+            integrity_signal_count=0,
+            competency_key=target_competency,
+        )
+        await self.repository.upsert_turn_score(
+            turn_id=turn_row.id,
+            technical_correctness=turn_score.technical_correctness,
+            problem_solving_debugging=turn_score.problem_solving_debugging,
+            architecture_design=turn_score.architecture_design,
+            communication_clarity=turn_score.communication_clarity,
+            tradeoff_reasoning=turn_score.tradeoff_reasoning,
+            professional_integrity=turn_score.professional_integrity,
+            confidence_score=turn_score.confidence_score,
+            weighted_score=turn_score.weighted_score,
+            evidence_snippet=turn_score.evidence_snippet,
+            coverage_update=turn_score.coverage_update,
+        )
 
         if completed:
             await self.repository.complete_session(session)
+            stored_scores = await self.repository.list_turn_scores(session_id)
+            synthesized = self.scoring_engine.summarize_final_assessment(
+                [
+                    self.scoring_engine.score_turn(
+                        transcript_text=str(item.evidence_snippet or ""),
+                        evaluation_signals={
+                            "technical_accuracy": item.technical_correctness,
+                            "communication_clarity": item.communication_clarity,
+                            "confidence": item.confidence_score,
+                        },
+                        answer_quality_score=0.7,
+                        integrity_signal_count=0,
+                        competency_key=str((item.coverage_update or {}).get("competency_key", "")),
+                    )
+                    for item in stored_scores
+                ]
+            )
+            await self.repository.upsert_final_assessment(
+                session_id=session_id,
+                overall_score=float(synthesized.get("overall_score", 0.0)),
+                competency_coverage=float(synthesized.get("competency_coverage", 0.0)),
+                strengths=[str(item) for item in synthesized.get("strengths", [])],
+                weaknesses=[str(item) for item in synthesized.get("weaknesses", [])],
+                recommendation=str(synthesized.get("recommendation", "No Hire")),
+                summary_text=str(turn.get("summary_text", "")).strip(),
+            )
 
         await self.repository.commit()
+        metrics_store.increment_turn_completion()
+        metrics_store.record_interview_latency(int((perf_counter() - turn_started) * 1000))
 
         ai_audio = await self.ai_service.synthesize_speech(next_question, db=self.repository.db)
         return LiveTurnResult(
@@ -222,6 +359,8 @@ class InterviewService:
                 "confidence": turn["confidence"],
                 "overall_rating": turn["overall_rating"],
                 "summary_text": turn["summary_text"],
+                "target_competency": target_competency,
+                "answer_quality_score": answer_quality_score,
             },
             ai_audio_bytes=ai_audio,
             completed=completed,
@@ -290,6 +429,26 @@ class InterviewService:
                 else None
             ),
         )
+
+    @staticmethod
+    def _build_follow_up_question(competency_key: str, current_question: str) -> str:
+        if competency_key == "debugging":
+            return "Could you walk through the exact debugging steps and signals you would check first?"
+        if competency_key == "architecture":
+            return "Can you justify your architecture choice with clear trade-offs and failure scenarios?"
+        if competency_key == "tradeoff_reasoning":
+            return "What trade-offs did you make, and why did you prioritize that option?"
+        return f"Please expand your previous answer with concrete implementation details for: {current_question}"
+
+    @staticmethod
+    def _build_fallback_competency_question(role: str, competency_key: str) -> str:
+        if competency_key == "debugging":
+            return f"For this {role} role, describe a production bug you diagnosed and how you isolated root cause."
+        if competency_key == "architecture":
+            return f"For this {role} role, explain a system design decision and how it scales under load."
+        if competency_key == "tradeoff_reasoning":
+            return f"For this {role} role, describe a key trade-off you made between speed, quality, and reliability."
+        return f"For this {role} role, describe how you would implement a feature end to end in production."
 
     @staticmethod
     def _normalize_interview_type(interview_type: str) -> str:

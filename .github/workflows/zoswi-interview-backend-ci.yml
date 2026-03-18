@@ -1,0 +1,41 @@
+name: ZoSwi Interview Backend CI
+
+on:
+  push:
+    paths:
+      - "zoswi-ai-interview/backend/**"
+      - ".github/workflows/zoswi-interview-backend-ci.yml"
+  pull_request:
+    paths:
+      - "zoswi-ai-interview/backend/**"
+      - ".github/workflows/zoswi-interview-backend-ci.yml"
+
+jobs:
+  backend-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zoswi-ai-interview/backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: sqlite:///./ci_test.db
+        run: |
+          alembic -c alembic.ini upgrade head
+
+      - name: Validate app imports
+        run: |
+          python -c "from app.main import app; print(app.title)"

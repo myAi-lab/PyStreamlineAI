@@ -54,6 +54,18 @@ BOT_WELCOME_MESSAGE = "I am ZoSwi. Ask me about your Resume and JD analysis."
 BOT_LAUNCHER_ICON = "\U0001F916"
 BOT_ASSISTANT_AVATAR = "\U0001F916"
 USER_AVATAR = "\U0001F9D1"
+ZOSWI_ASSISTANT_SCOPE_ONLY_MESSAGE = (
+    "I can only help with resume, JD, ATS, and interview-prep guidance. "
+    "Share your resume/JD question."
+)
+ZOSWI_ASSISTANT_NO_CODE_MESSAGE = (
+    "I cannot provide code, scripts, or non-career content. "
+    "I can help with resume, JD, ATS, and interview-prep guidance."
+)
+ZOSWI_ASSISTANT_EMERGENCY_MESSAGE = (
+    "This sounds like a health or safety emergency. Contact emergency services now "
+    "(call 911 in the U.S.) or your local emergency number immediately."
+)
 AUTH_COOKIE_NAME = "pystreamline_auth"
 AUTH_SESSION_TTL_DAYS = 14
 PBKDF2_ITERATIONS = 210000
@@ -989,6 +1001,14 @@ def enrich_user_with_entitlements(user: dict[str, Any] | None) -> dict[str, Any]
     if not isinstance(user, dict):
         return user
     enriched = dict(user)
+    cleaned_email = str(enriched.get("email", "")).strip().lower()
+    if cleaned_email:
+        enriched["email"] = cleaned_email
+    enriched["role"] = normalize_user_role_for_login_email(
+        str(enriched.get("role", "")),
+        cleaned_email,
+        assign_default=True,
+    )
     enriched["entitlements"] = sorted(get_user_entitlement_tokens(int(enriched.get("id") or 0)))
     return enriched
 
@@ -2117,7 +2137,15 @@ def get_user_identity_by_email(email: str) -> dict[str, Any] | None:
             """,
             (cleaned_email,),
         ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["role"] = normalize_user_role_for_login_email(
+            str(payload.get("role", "")),
+            cleaned_email,
+            assign_default=True,
+        )
+        return payload
     finally:
         conn.close()
 
@@ -2178,7 +2206,9 @@ def create_or_update_signup_verification_request(
 ) -> tuple[bool, str, int]:
     cleaned_email = str(email or "").strip().lower()
     cleaned_role_contact_email = str(role_contact_email or "").strip().lower()
-    normalized_role = str(role or "").strip().title()
+    normalized_role = normalize_user_role_for_login_email(str(role or "").strip().title(), cleaned_email)
+    if normalized_role != "Recruiter":
+        cleaned_role_contact_email = ""
     cleaned_years = str(years_experience or "").strip()
     cleaned_profile = profile_data if isinstance(profile_data, dict) else {}
     profile_payload = json.dumps(cleaned_profile, separators=(",", ":")) if cleaned_profile else None
@@ -2325,6 +2355,13 @@ def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[b
     email = str(request.get("email", "")).strip().lower()
     if not email:
         return False, "Signup request data is invalid."
+    normalized_role = normalize_user_role_for_login_email(
+        str(request.get("role", "")).strip(),
+        email,
+    )
+    normalized_role_contact_email = str(request.get("role_contact_email", "")).strip().lower()
+    if normalized_role != "Recruiter":
+        normalized_role_contact_email = ""
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = db_connect()
     conn.row_factory = sqlite3.Row
@@ -2351,9 +2388,9 @@ def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[b
                     str(request.get("full_name", "")).strip() or email.split("@")[0],
                     email,
                     str(request.get("password_hash", "")).strip(),
-                    str(request.get("role", "")).strip(),
+                    normalized_role,
                     str(request.get("years_experience", "")).strip(),
-                    str(request.get("role_contact_email", "")).strip() or None,
+                    normalized_role_contact_email or None,
                     str(request.get("profile_data", "")).strip() or None,
                     "active",
                     now_iso,
@@ -2749,6 +2786,46 @@ def is_university_email_domain(domain: str) -> bool:
     )
 
 
+def infer_non_recruiter_role_from_email(email: str) -> str:
+    domain = extract_email_domain(email)
+    if is_university_email_domain(domain):
+        return "Student"
+    return "Candidate"
+
+
+def normalize_user_role_for_login_email(role: str, email: str, assign_default: bool = False) -> str:
+    normalized_role = str(role or "").strip().title()
+    if normalized_role == "Recruiter":
+        domain = extract_email_domain(email)
+        if is_university_email_domain(domain):
+            return "Student"
+        if domain in PUBLIC_EMAIL_DOMAINS:
+            return "Candidate"
+        return "Recruiter"
+    if normalized_role in {"Candidate", "Student"}:
+        return normalized_role
+    if assign_default and not normalized_role:
+        return infer_non_recruiter_role_from_email(email)
+    return normalized_role
+
+
+def get_recruiter_role_restriction_reason(email: str) -> str:
+    domain = extract_email_domain(email)
+    if not domain:
+        return ""
+    if is_university_email_domain(domain):
+        return (
+            "Recruiter access is restricted to organization emails. "
+            "University domains are treated as Student accounts."
+        )
+    if domain in PUBLIC_EMAIL_DOMAINS:
+        return (
+            "Recruiter access is restricted to organization emails. "
+            "Personal domains are treated as Candidate accounts."
+        )
+    return ""
+
+
 def is_valid_email_address(email: str) -> bool:
     domain = extract_email_domain(email)
     return bool(domain and "." in domain and not domain.startswith(".") and not domain.endswith("."))
@@ -2757,6 +2834,11 @@ def is_valid_email_address(email: str) -> bool:
 def validate_signup_email_for_role(email: str, role: str) -> tuple[bool, str]:
     if not is_valid_email_address(email):
         return False, "Enter a valid email address."
+    normalized_role = str(role or "").strip().title()
+    if normalized_role == "Recruiter":
+        restriction_reason = get_recruiter_role_restriction_reason(email)
+        if restriction_reason:
+            return False, f"{restriction_reason} Sign up as Candidate or Student."
     return True, ""
 
 
@@ -2776,6 +2858,8 @@ def validate_role_specific_email(role: str, role_email: str) -> tuple[bool, str]
     domain = extract_email_domain(cleaned_role_email)
     if normalized_role == "Recruiter" and domain in PUBLIC_EMAIL_DOMAINS:
         return False, "Recruiter accounts require an organization email (not personal email domains)."
+    if normalized_role == "Recruiter" and is_university_email_domain(domain):
+        return False, "Recruiter accounts require an organization email (university domains are not allowed)."
     if normalized_role == "Student" and not is_university_email_domain(domain):
         return False, "Student accounts require a university email domain (for example, .edu)."
     return True, ""
@@ -3557,18 +3641,25 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
             (email,),
         ).fetchone()
         if row is not None:
+            existing_role = str(row["role"] or "")
+            normalized_role = normalize_user_role_for_login_email(
+                existing_role,
+                email,
+                assign_default=True,
+            )
             now_iso = datetime.now(timezone.utc).isoformat()
             conn.execute(
                 """
                 UPDATE users
                 SET
+                    role = ?,
                     email_verified_at = COALESCE(email_verified_at, ?),
                     auth_provider = COALESCE(auth_provider, ?),
                     auth_provider_user_id = COALESCE(auth_provider_user_id, ?),
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (now_iso, oauth_provider or None, provider_user_id, now_iso, int(row["id"])),
+                (normalized_role, now_iso, oauth_provider or None, provider_user_id, now_iso, int(row["id"])),
             )
             conn.commit()
             row = conn.execute(
@@ -3584,6 +3675,7 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
 
         now_iso = datetime.now(timezone.utc).isoformat()
         random_password = secrets.token_urlsafe(24)
+        normalized_role = normalize_user_role_for_login_email("", email, assign_default=True)
         cur = conn.execute(
             """
             INSERT INTO users (
@@ -3596,7 +3688,7 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
                 full_name,
                 email,
                 hash_password(random_password),
-                "",
+                normalized_role,
                 "",
                 "active",
                 oauth_provider or None,
@@ -3615,7 +3707,7 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
             "id": user_id,
             "full_name": full_name,
             "email": email,
-            "role": "",
+            "role": normalized_role,
             "years_experience": "",
             "created_at": now_iso,
             }
@@ -3627,8 +3719,13 @@ def get_or_create_user_from_oauth_identity(identity: dict[str, Any]) -> dict[str
 def sync_user_from_oauth_session() -> None:
     if not is_streamlit_oauth_logged_in():
         return
-    identity = get_streamlit_oauth_user_info()
-    user = get_or_create_user_from_oauth_identity(identity)
+    try:
+        identity = get_streamlit_oauth_user_info()
+        user = get_or_create_user_from_oauth_identity(identity)
+    except Exception:
+        # OAuth identity may be present even when DB/config is temporarily unavailable.
+        # Keep auth screen responsive instead of failing the whole render cycle.
+        return
     if user is None:
         return
 
@@ -7833,6 +7930,121 @@ def build_zoswi_response_mode_guidance(mode: str) -> str:
     )
 
 
+def _normalize_assistant_message_text(message: str) -> str:
+    return re.sub(r"\s+", " ", str(message or "").strip().lower())
+
+
+def is_health_or_emergency_request(message: str) -> bool:
+    text = _normalize_assistant_message_text(message)
+    if not text:
+        return False
+
+    emergency_markers = (
+        "going to die",
+        "is dying",
+        "not breathing",
+        "chest pain",
+        "heart attack",
+        "stroke",
+        "seizure",
+        "overdose",
+        "bleeding badly",
+        "bleeding heavily",
+        "suicide",
+        "self harm",
+        "kill myself",
+        "emergency",
+        "ambulance",
+    )
+    health_markers = (
+        "illness",
+        "ill",
+        "sick",
+        "medical",
+        "hospital",
+        "doctor",
+        "injury",
+    )
+    return any(marker in text for marker in emergency_markers) or (
+        any(marker in text for marker in health_markers) and any(marker in text for marker in ("urgent", "help", "die", "dying"))
+    )
+
+
+def is_resume_jd_related_request(message: str) -> bool:
+    text = _normalize_assistant_message_text(message)
+    if not text:
+        return False
+
+    allowed_markers = (
+        "resume",
+        "cv",
+        "job description",
+        "jd",
+        "ats",
+        "keyword",
+        "interview",
+        "cover letter",
+        "application",
+        "role",
+        "experience bullet",
+        "work experience",
+        "career",
+        "job match",
+        "sponsorship",
+        "visa",
+    )
+    return any(marker in text for marker in allowed_markers)
+
+
+def is_code_or_fun_request(message: str) -> bool:
+    text = _normalize_assistant_message_text(message)
+    if not text:
+        return False
+
+    code_markers = (
+        "write code",
+        "share code",
+        "generate code",
+        "java code",
+        "python code",
+        "javascript code",
+        "typescript code",
+        "c++ code",
+        "c# code",
+        "code snippet",
+        "source code",
+        "write a function",
+        "create a script",
+        "algorithm solution",
+        "leetcode solution",
+        "debug this code",
+    )
+    fun_markers = (
+        "joke",
+        "funny",
+        "meme",
+        "story",
+        "poem",
+        "song",
+        "game",
+        "roast",
+    )
+    return any(marker in text for marker in code_markers) or any(marker in text for marker in fun_markers)
+
+
+def get_assistant_guardrail_response(message: str) -> str:
+    text = _normalize_assistant_message_text(message)
+    if not text:
+        return ZOSWI_ASSISTANT_SCOPE_ONLY_MESSAGE
+    if is_health_or_emergency_request(text):
+        return ZOSWI_ASSISTANT_EMERGENCY_MESSAGE
+    if is_code_or_fun_request(text):
+        return ZOSWI_ASSISTANT_NO_CODE_MESSAGE
+    if not is_resume_jd_related_request(text):
+        return ZOSWI_ASSISTANT_SCOPE_ONLY_MESSAGE
+    return ""
+
+
 def build_assistant_prompt(message: str) -> str:
     analysis = st.session_state.get("analysis_result")
     user = st.session_state.get("user") or {}
@@ -7872,22 +8084,24 @@ def build_assistant_prompt(message: str) -> str:
 You are ZoSwi, an AI assistant for professional career guidance and ZoSwi product guidance.
 
 Conversation style:
-- Be warm, lively, concise, and natural.
-- If user says thanks or appreciation, respond naturally (for example: You're welcome) and offer next help.
-- Keep replies focused on exactly what the user asked.
+- Use a neutral, direct, professional tone.
+- Keep replies concise and factual.
+- No emotional comfort language, no humor, and no casual banter.
 - Use plain text formatting. Do not use markdown headings like #, ##, or ###.
 - Keep language natural and readable with proper spacing and punctuation.
 - Keep branding ZoSwi-only. Do not mention or compare any other AI assistant or application by name.
 - Do not mention, recommend, or list any third-party app/software names. Give ZoSwi-native guidance only.
 - Adapt depth by response mode: brief for vague asks, detailed for complex asks.
+- Never provide programming code, scripts, pseudo-code, or coding examples.
 
 Scope and safety:
-- Primary scope: resume review, JD analysis, ATS keywords, interview prep, role-skill guidance, and ZoSwi product navigation.
+- Primary scope: resume review, JD analysis, ATS keywords, interview prep, role-skill guidance.
 - Runtime module flags: {module_status_summary}.
 - Respect runtime module flags and only claim module availability when that module is enabled.
-- If asked who built ZoSwi (or who built you), answer that ZoSwi team was founded by {builder_name}.
-- For coding-room questions, only guide to Home -> Start 3-Stage AI Coding Room when that module is enabled.
-- If request is harmful, illegal, or privacy-invasive, refuse politely and redirect to safe career guidance.
+- If user asks anything outside that scope, refuse briefly and ask for a resume/JD related question.
+- If user asks for code or fun/entertainment requests, refuse and redirect to resume/JD scope.
+- If user message indicates a health/safety emergency, do not provide any other guidance; instruct them to contact emergency services now (911 in the U.S. or local equivalent).
+- If request is harmful, illegal, or privacy-invasive, refuse briefly and redirect to safe career guidance.
 - Never request or expose sensitive data like passwords, API keys, bank/identity details.
 
 Candidate context:
@@ -7924,6 +8138,11 @@ def chunk_to_text(chunk: Any) -> str:
 
 
 def ask_assistant_bot_stream(message: str):
+    guardrail_response = get_assistant_guardrail_response(message)
+    if guardrail_response:
+        yield sanitize_zoswi_response_text(guardrail_response)
+        return
+
     if is_zoswi_builder_request(message):
         yield sanitize_zoswi_response_text(build_zoswi_builder_response())
         return
@@ -7966,6 +8185,10 @@ def ask_assistant_bot_stream(message: str):
 
 
 def ask_assistant_bot(message: str) -> str:
+    guardrail_response = get_assistant_guardrail_response(message)
+    if guardrail_response:
+        return sanitize_zoswi_response_text(guardrail_response)
+
     if is_zoswi_builder_request(message):
         return sanitize_zoswi_response_text(build_zoswi_builder_response())
 
@@ -11299,6 +11522,10 @@ def render_auth_screen() -> None:
                 elif role == "Recruiter":
                     email_label = "Login Email"
                 email = st.text_input(email_label, key="signup_email")
+                if role == "Recruiter":
+                    recruiter_restriction = get_recruiter_role_restriction_reason(email)
+                    if recruiter_restriction:
+                        st.info(recruiter_restriction)
                 role_contact_email = ""
                 years_experience = ""
                 role_profile_data: dict[str, str] = {}
@@ -12191,6 +12418,7 @@ def main() -> None:
         init_state=init_state,
         sync_promo_codes_from_secrets=sync_promo_codes_from_secrets,
         try_restore_user_from_cookie=try_restore_user_from_cookie,
+        sync_user_from_oauth_session=sync_user_from_oauth_session,
         render_auth_cookie_sync=render_auth_cookie_sync,
         render_auth_screen=render_auth_screen,
         render_main_screen=render_main_screen,

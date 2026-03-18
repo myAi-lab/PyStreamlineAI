@@ -19,6 +19,7 @@ class AppRuntimeHandlersDTO:
     init_state: Callable[[], None]
     sync_promo_codes_from_secrets: Callable[[], None]
     try_restore_user_from_cookie: Callable[[], None]
+    sync_user_from_oauth_session: Callable[[], None]
     render_auth_cookie_sync: Callable[[], None]
     render_auth_screen: Callable[[], None]
     render_main_screen: Callable[[], None]
