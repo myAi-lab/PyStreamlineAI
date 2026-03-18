@@ -49,6 +49,7 @@ except Exception:
     PsycopgConnectionPool = None
 
 LOGO_IMAGE_PATH = os.path.join("assets", "logo.png")
+BROWSER_ICON_PATH = os.path.join("assets", "logo_icon.png")
 BOT_WELCOME_MESSAGE = "I am ZoSwi. Ask me about your Resume and JD analysis."
 BOT_LAUNCHER_ICON = "\U0001F916"
 BOT_ASSISTANT_AVATAR = "\U0001F916"
@@ -12174,7 +12175,16 @@ def get_current_session_user() -> Any:
 
 
 def main() -> None:
-    config = PageConfigDTO(page_title="Career Command Centre", layout="wide", initial_sidebar_state="auto")
+    if os.path.exists(BROWSER_ICON_PATH):
+        page_icon = BROWSER_ICON_PATH
+    else:
+        page_icon = LOGO_IMAGE_PATH if os.path.exists(LOGO_IMAGE_PATH) else None
+    config = PageConfigDTO(
+        page_title="Career Command Centre",
+        layout="wide",
+        initial_sidebar_state="auto",
+        page_icon=page_icon,
+    )
     handlers = AppRuntimeHandlersDTO(
         bootstrap_runtime=bootstrap_runtime,
         init_db=init_db,

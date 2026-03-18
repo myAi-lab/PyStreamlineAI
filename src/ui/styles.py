@@ -15,6 +15,24 @@ def render_app_styles() -> None:
             --ai-card: #ffffff;
             --ai-line: #d9e2ec;
         }
+        [data-testid="stHeader"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            background: transparent !important;
+        }
+        [data-testid="stHeader"] > div {
+            display: none !important;
+        }
+        [data-testid="stToolbar"],
+        [data-testid="stStatusWidget"],
+        [data-testid="stDecoration"] {
+            display: none !important;
+        }
+        #MainMenu,
+        footer {
+            visibility: hidden !important;
+            display: none !important;
+        }
         .stApp {
             background:
                 radial-gradient(1200px 500px at 15% -10%, #e8f2ff 0%, transparent 55%),

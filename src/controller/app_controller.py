@@ -11,6 +11,7 @@ def run_app_runtime(config: PageConfigDTO, handlers: AppRuntimeHandlersDTO) -> N
         page_title=config.page_title,
         layout=config.layout,
         initial_sidebar_state=config.initial_sidebar_state,
+        page_icon=config.page_icon,
     )
     if not bool(st.session_state.get("_runtime_bootstrap_ready")):
         with st.spinner("Preparing your workspace..."):

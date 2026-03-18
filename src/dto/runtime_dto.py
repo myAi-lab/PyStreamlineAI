@@ -9,6 +9,7 @@ class PageConfigDTO:
     page_title: str
     layout: str = "wide"
     initial_sidebar_state: str = "expanded"
+    page_icon: str | None = None
 
 
 @dataclass(frozen=True)
