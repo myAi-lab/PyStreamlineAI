@@ -1,9 +1,26 @@
 import type { InterviewResultResponse, StartInterviewResponse } from "./types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const WS_BASE_URL =
+function normalizeBaseUrl(url: string) {
+  return String(url || "").trim().replace(/\/+$/, "");
+}
+
+function isLocalHostname(hostname: string) {
+  const normalized = String(hostname || "").trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function getDefaultApiBaseUrl() {
+  if (typeof window !== "undefined" && isLocalHostname(window.location.hostname)) {
+    return "http://localhost:8000";
+  }
+  return "";
+}
+
+const API_BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL ?? getDefaultApiBaseUrl());
+const WS_BASE_URL = normalizeBaseUrl(
   process.env.NEXT_PUBLIC_WS_BASE_URL ??
-  API_BASE_URL.replace("https://", "wss://").replace("http://", "ws://");
+    API_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
+);
 
 type StartInterviewPayload = {
   candidate_name: string;
@@ -12,6 +29,9 @@ type StartInterviewPayload = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!API_BASE_URL) {
+    throw new Error("Missing NEXT_PUBLIC_API_BASE_URL. Configure it in your deployment environment.");
+  }
   const response = await fetch(`${API_BASE_URL}${path}`, init);
   if (!response.ok) {
     const errorPayload = await response.json().catch(() => ({}));
@@ -37,5 +57,8 @@ export function getInterviewResult(sessionId: string) {
 }
 
 export function getInterviewWebSocketUrl(path = "/ws/interview") {
+  if (!WS_BASE_URL) {
+    throw new Error("Missing NEXT_PUBLIC_WS_BASE_URL. Configure it in your deployment environment.");
+  }
   return `${WS_BASE_URL}${path}`;
 }

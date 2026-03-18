@@ -172,33 +172,38 @@ class AIService:
         session_hint = session_seed or role
         focus_guidance = self._interview_type_guidance(normalized_type)
 
-        response = await client.chat.completions.create(
-            model=settings.llm_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Role: {role}\n"
-                        f"Interview Type: {normalized_type}\n"
-                        f"Focus Guidance: {focus_guidance}\n"
-                        f"Session Seed: {session_hint}\n"
-                        f"Topic Candidates: {candidate_topics}\n"
-                        f"Base Opening Question: {base_question}\n"
-                        "Rewrite the base question for this specific session.\n"
-                        "Rules:\n"
-                        "- Start with a short human acknowledgment (2-6 words).\n"
-                        "- Ask exactly one question aligned to Interview Type.\n"
-                        "- Keep it under 30 words.\n"
-                        "- Do not use the same opening style as a generic intro every time.\n"
-                        "- Do not use repeated canned acknowledgment phrases.\n"
-                        "- Keep the intent close to Base Opening Question."
-                    ),
-                },
-            ],
-            temperature=0.7,
-        )
-        question = self._clean_question(response.choices[0].message.content or "")
+        try:
+            response = await client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Role: {role}\n"
+                            f"Interview Type: {normalized_type}\n"
+                            f"Focus Guidance: {focus_guidance}\n"
+                            f"Session Seed: {session_hint}\n"
+                            f"Topic Candidates: {candidate_topics}\n"
+                            f"Base Opening Question: {base_question}\n"
+                            "Rewrite the base question for this specific session.\n"
+                            "Rules:\n"
+                            "- Start with a short human acknowledgment (2-6 words).\n"
+                            "- Ask exactly one question aligned to Interview Type.\n"
+                            "- Keep it under 30 words.\n"
+                            "- Do not use the same opening style as a generic intro every time.\n"
+                            "- Do not use repeated canned acknowledgment phrases.\n"
+                            "- Keep the intent close to Base Opening Question."
+                        ),
+                    },
+                ],
+                temperature=0.7,
+            )
+            question = self._clean_question(response.choices[0].message.content or "")
+        except Exception as exc:
+            logger.warning("Opening question generation failed; using fallback question: %s", exc)
+            return base_question
+
         if not question:
             return base_question
         return self._ensure_active_question(
@@ -249,41 +254,49 @@ class AIService:
             "- If the latest answer is vague, ask one clarifying follow-up on the same topic."
         )
 
-        response = await client.chat.completions.create(
-            model=settings.llm_model,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.55,
-        )
-        payload = json.loads(response.choices[0].message.content or "{}")
-        normalized = self._normalize_turn(payload)
-        normalized["next_question"] = self._ensure_active_question(
-            normalized["next_question"],
-            candidate_answer=candidate_answer,
-            previous_ai_questions=previous_ai_questions,
-            role=role,
-            interview_type=normalized_type,
-        )
-        return normalized
+        try:
+            response = await client.chat.completions.create(
+                model=settings.llm_model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.55,
+            )
+            payload = json.loads(response.choices[0].message.content or "{}")
+            normalized = self._normalize_turn(payload)
+            normalized["next_question"] = self._ensure_active_question(
+                normalized["next_question"],
+                candidate_answer=candidate_answer,
+                previous_ai_questions=previous_ai_questions,
+                role=role,
+                interview_type=normalized_type,
+            )
+            return normalized
+        except Exception as exc:
+            logger.warning("Turn generation failed; using fallback scoring/question: %s", exc)
+            return self._fallback_turn(candidate_answer, role, transcript_history, normalized_type)
 
     async def synthesize_speech(self, text: str, db: AsyncSession | None = None) -> bytes:
         client = await self._get_client(db)
         if not client:
             return b""
 
-        response = await client.audio.speech.create(
-            model=settings.tts_model,
-            voice=settings.tts_voice,
-            input=text,
-            response_format="mp3",
-        )
-        data = response.read()
-        if hasattr(data, "__await__"):
-            data = await data
-        return data
+        try:
+            response = await client.audio.speech.create(
+                model=settings.tts_model,
+                voice=settings.tts_voice,
+                input=text,
+                response_format="mp3",
+            )
+            data = response.read()
+            if hasattr(data, "__await__"):
+                data = await data
+            return data
+        except Exception as exc:
+            logger.warning("TTS generation failed; continuing without AI audio: %s", exc)
+            return b""
 
     async def _get_client(self, db: AsyncSession | None) -> AsyncOpenAI | None:
         api_key = await self._resolve_api_key(db)
