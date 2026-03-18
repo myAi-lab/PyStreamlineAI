@@ -223,10 +223,13 @@ async def interview_websocket(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": exc.message, "details": exc.details})
         except WebSocketDisconnect:
             logger.info("Client disconnected before AppError could be sent. session_id=%s", active_session_id)
-    except Exception:
-        logger.exception("Unhandled websocket error")
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_text = str(exc).strip()
+        detail = error_type if not error_text else f"{error_type}: {error_text}"
+        logger.exception("Unhandled websocket error: %s", detail)
         try:
-            await websocket.send_json({"type": "error", "message": "Internal websocket error."})
+            await websocket.send_json({"type": "error", "message": f"Internal websocket error ({detail[:240]})."})
         except WebSocketDisconnect:
             logger.info("Client disconnected before internal error could be sent. session_id=%s", active_session_id)
     finally:
