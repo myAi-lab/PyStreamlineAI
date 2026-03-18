@@ -8,8 +8,24 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+
+def _normalize_database_url(database_url: str) -> str:
+    normalized = str(database_url or "").strip()
+
+    # Render/Supabase often provide postgres:// or postgresql:// URLs.
+    # This backend uses psycopg v3, so force the compatible SQLAlchemy driver.
+    if normalized.startswith("postgres://"):
+        normalized = normalized.replace("postgres://", "postgresql://", 1)
+    if normalized.startswith("postgresql+psycopg2://"):
+        normalized = normalized.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+    elif normalized.startswith("postgresql://"):
+        normalized = normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    return normalized
+
+
 engine = create_async_engine(
-    settings.database_url,
+    _normalize_database_url(settings.database_url),
     pool_pre_ping=True,
 )
 SessionLocal = async_sessionmaker(
