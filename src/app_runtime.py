@@ -4517,8 +4517,8 @@ def is_zoswi_builder_request(message: str) -> bool:
 def build_zoswi_builder_response() -> str:
     builder_name = get_zoswi_builder_name()
     if builder_name:
-        return f"ZoSwi was built by {builder_name}."
-    return "ZoSwi was built by the ZoSwi team."
+        return f"ZoSwi team was founded by {builder_name}."
+    return "ZoSwi team was founded by the ZoSwi team."
 
 
 def build_zoswi_capability_response(message: str) -> str:
@@ -7877,7 +7877,7 @@ Scope and safety:
 - Primary scope: resume review, JD analysis, ATS keywords, interview prep, role-skill guidance, and ZoSwi product navigation.
 - Runtime module flags: {module_status_summary}.
 - Respect runtime module flags and only claim module availability when that module is enabled.
-- If asked who built ZoSwi (or who built you), answer that ZoSwi was built by {builder_name}.
+- If asked who built ZoSwi (or who built you), answer that ZoSwi team was founded by {builder_name}.
 - For coding-room questions, only guide to Home -> Start 3-Stage AI Coding Room when that module is enabled.
 - If request is harmful, illegal, or privacy-invasive, refuse politely and redirect to safe career guidance.
 - Never request or expose sensitive data like passwords, API keys, bank/identity details.
@@ -8218,7 +8218,7 @@ Response rules:
 - Do not mention, recommend, or list any third-party app/software names. Provide ZoSwi-native workflows only.
 - Runtime module flags: {module_status_summary}.
 - Respect runtime module flags and only claim module availability when that module is enabled.
-- If asked who built ZoSwi (or who built you), answer that ZoSwi was built by {builder_name}.
+- If asked who built ZoSwi (or who built you), answer that ZoSwi team was founded by {builder_name}.
 - If the user asks for innovation ideas, include a short section named "ZoSwi Original Ideas" with practical, non-generic concepts and success metrics.
 - Adapt depth by response mode: brief for vague asks, detailed for complex asks.
 
