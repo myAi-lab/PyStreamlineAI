@@ -73,6 +73,38 @@ def render_live_interview_view(user: dict[str, Any]) -> None:
             border-radius: 10px;
             padding: 0.55rem 0.7rem;
         }
+        .st-key-live_interview_open_btn {
+            display: inline-flex;
+            margin-top: 0.35rem;
+            margin-bottom: 0.2rem;
+        }
+        .st-key-live_interview_open_btn button {
+            border-radius: 999px !important;
+            border: 1px solid #0ea5e9 !important;
+            background: linear-gradient(135deg, #ecfeff 0%, #cffafe 48%, #e0f2fe 100%) !important;
+            color: #075985 !important;
+            font-weight: 700 !important;
+            min-height: 2rem !important;
+            padding: 0.18rem 0.78rem !important;
+            box-shadow: 0 7px 16px rgba(14, 165, 233, 0.2) !important;
+            transition: transform 0.18s ease, box-shadow 0.2s ease, filter 0.2s ease !important;
+            animation: live-intv-btn-glow 2.1s ease-in-out infinite;
+        }
+        .st-key-live_interview_open_btn button:hover {
+            transform: translateY(-1px) scale(1.02);
+            filter: saturate(1.08);
+            box-shadow: 0 10px 20px rgba(2, 132, 199, 0.24) !important;
+        }
+        .st-key-live_interview_open_btn button:active {
+            transform: translateY(0) scale(0.98);
+        }
+        .st-key-live_interview_open_btn button p {
+            font-size: 0.8rem !important;
+        }
+        @keyframes live-intv-btn-glow {
+            0%, 100% { box-shadow: 0 7px 16px rgba(14, 165, 233, 0.2); }
+            50% { box-shadow: 0 10px 22px rgba(14, 165, 233, 0.3); }
+        }
         </style>
         <div class="live-intv-shell">
             <h2 class="live-intv-title">Live AI Interview Integration</h2>
@@ -124,7 +156,12 @@ def render_live_interview_view(user: dict[str, Any]) -> None:
         st.warning("Enter both candidate name and target role to generate the launch URL.")
         return
 
-    open_now = st.button("Open Live Interview in New Tab", key="live_interview_open_btn", use_container_width=True)
+    open_now = st.button(
+        "Open in New Tab",
+        key="live_interview_open_btn",
+        icon=":material/open_in_new:",
+        use_container_width=False,
+    )
     safe_launch_url = html.escape(launch_url, quote=True)
 
     if open_now:
