@@ -572,8 +572,15 @@ def get_zoswi_live_interview_base_url() -> str:
         "ZOSWI_INTERVIEW_APP_URL",
         "interview",
         "app_url",
-        ZOSWI_INTERVIEW_APP_URL_DEFAULT,
+        "",
     )
+    if not configured:
+        runtime_origin = str(get_runtime_app_origin() or "").lower()
+        is_local_runtime = runtime_origin.startswith("http://localhost") or runtime_origin.startswith(
+            "http://127.0.0.1"
+        )
+        if is_local_runtime:
+            configured = ZOSWI_INTERVIEW_APP_URL_DEFAULT
     parsed = urlsplit(configured)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
