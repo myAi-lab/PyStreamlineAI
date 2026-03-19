@@ -170,10 +170,11 @@ def render_live_interview_view(user: dict[str, Any]) -> None:
         use_container_width=False,
     )
     safe_launch_url = html.escape(launch_url, quote=True)
+    launch_url_js = json.dumps(launch_url)
 
     if open_now:
         st.components.v1.html(
-            f"<script>window.open('{safe_launch_url}', '_blank', 'noopener,noreferrer');</script>",
+            f"<script>window.open({launch_url_js}, '_blank', 'noopener,noreferrer');</script>",
             height=0,
         )
 
