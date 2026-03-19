@@ -221,41 +221,47 @@ class AIGateway:
         if db is None:
             return
         try:
-            await db.execute(
-                text(
-                    """
-                    INSERT INTO usage_ledger (
-                        org_id,
-                        session_id,
-                        model,
-                        input_tokens,
-                        output_tokens,
-                        audio_seconds,
-                        cost_usd,
-                        timestamp
-                    )
-                    VALUES (
-                        :org_id,
-                        :session_id,
-                        :model,
-                        :input_tokens,
-                        :output_tokens,
-                        :audio_seconds,
-                        :cost_usd,
-                        NOW()
-                    )
-                    """
-                ),
-                {
-                    "org_id": record.org_id,
-                    "session_id": record.session_id,
-                    "model": record.model,
-                    "input_tokens": record.input_tokens,
-                    "output_tokens": record.output_tokens,
-                    "audio_seconds": record.audio_seconds,
-                    "cost_usd": record.cost_usd,
-                },
-            )
-        except Exception:
+            # Isolate optional usage logging from the caller transaction so
+            # missing table/column errors don't poison interview writes.
+            async with db.begin_nested():
+                await db.execute(
+                    text(
+                        """
+                        INSERT INTO usage_ledger (
+                            org_id,
+                            session_id,
+                            model,
+                            input_tokens,
+                            output_tokens,
+                            audio_seconds,
+                            cost_usd,
+                            timestamp
+                        )
+                        VALUES (
+                            :org_id,
+                            :session_id,
+                            :model,
+                            :input_tokens,
+                            :output_tokens,
+                            :audio_seconds,
+                            :cost_usd,
+                            NOW()
+                        )
+                        """
+                    ),
+                    {
+                        "org_id": record.org_id,
+                        "session_id": record.session_id,
+                        "model": record.model,
+                        "input_tokens": record.input_tokens,
+                        "output_tokens": record.output_tokens,
+                        "audio_seconds": record.audio_seconds,
+                        "cost_usd": record.cost_usd,
+                    },
+                )
+        except Exception as exc:
             # Usage logging must not break interview flow.
-            logger.debug("usage_ledger insert skipped (table may not exist yet).")
+            logger.debug(
+                "usage_ledger insert skipped (table may not exist yet): %s",
+                type(exc).__name__,
+            )
