@@ -100,7 +100,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, init);
   if (!response.ok) {
     const errorPayload = await response.json().catch(() => ({}));
-    throw new Error(errorPayload.error ?? errorPayload.detail ?? response.statusText ?? "Request failed");
+    const baseMessage = String(errorPayload.error ?? errorPayload.detail ?? response.statusText ?? "Request failed");
+    const reason = String(errorPayload?.details?.reason ?? "").trim();
+    const dbError = String(errorPayload?.details?.db_error ?? "").trim();
+    const reasonSuffix = reason ? ` (${reason})` : "";
+    const dbSuffix = dbError ? ` - ${dbError}` : "";
+    throw new Error(`${baseMessage}${reasonSuffix}${dbSuffix}`.trim());
   }
   return (await response.json()) as T;
 }
