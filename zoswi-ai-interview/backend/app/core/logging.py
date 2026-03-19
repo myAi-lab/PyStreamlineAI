@@ -24,6 +24,12 @@ class JsonLogFormatter(logging.Formatter):
         for field in extras:
             if hasattr(record, field):
                 payload[field] = getattr(record, field)
+        if record.exc_info:
+            exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
+            exc_message = str(record.exc_info[1]) if record.exc_info[1] else ""
+            payload["exception_type"] = exc_type
+            payload["exception_message"] = exc_message
+            payload["traceback"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=True)
 
 

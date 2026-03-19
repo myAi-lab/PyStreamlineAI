@@ -54,14 +54,22 @@ async def start_interview(
     except AppError:
         raise
     except SQLAlchemyError as exc:
-        logger.exception("Database error while starting interview for user_id=%s", auth_ctx.user_id)
+        db_error_message = str(getattr(exc, "orig", None) or exc)
+        logger.exception(
+            "Database error while starting interview for user_id=%s: %s",
+            auth_ctx.user_id,
+            db_error_message,
+        )
         raise AppError(
             status_code=503,
             message=(
                 "Interview database schema is not ready. "
                 "Run backend migrations (alembic upgrade head) and redeploy."
             ),
-            details={"reason": str(type(exc).__name__)},
+            details={
+                "reason": str(type(exc).__name__),
+                "db_error": db_error_message[:300],
+            },
         ) from exc
 
 
