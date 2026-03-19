@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.services.ai_gateway import AIGateway
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -32,6 +33,7 @@ class AIService:
         self._cached_db_key: str | None = None
         self._cached_db_key_at: float = 0.0
         self._db_lookup_error_logged = False
+        self.gateway = AIGateway(self._get_client)
 
     async def transcribe_audio_bytes(
         self,
@@ -55,7 +57,12 @@ class AIService:
             is_last_model = index == len(models) - 1
 
             try:
-                response = await client.audio.transcriptions.create(model=model_name, file=file_payload)
+                response = await self.gateway.transcribe(
+                    model=model_name,
+                    file_payload=file_payload,
+                    fallback_models=[],
+                    db=db,
+                )
                 transcript = getattr(response, "text", "").strip()
                 if index > 0:
                     logger.info(
@@ -91,7 +98,12 @@ class AIService:
                             retry_mime,
                             len(audio_bytes),
                         )
-                        response = await client.audio.transcriptions.create(model=model_name, file=retry_payload)
+                        response = await self.gateway.transcribe(
+                            model=model_name,
+                            file_payload=retry_payload,
+                            fallback_models=[],
+                            db=db,
+                        )
                         transcript = getattr(response, "text", "").strip()
                         return transcript or "No transcript detected."
                     except BadRequestError:
@@ -173,8 +185,9 @@ class AIService:
         focus_guidance = self._interview_type_guidance(normalized_type)
 
         try:
-            response = await client.chat.completions.create(
+            response = await self.gateway.chat_completion(
                 model=settings.llm_model,
+                fallback_models=[item for item in str(settings.llm_fallback_models or "").split(",") if item.strip()],
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
@@ -198,6 +211,7 @@ class AIService:
                     },
                 ],
                 temperature=0.7,
+                db=db,
             )
             question = self._clean_question(response.choices[0].message.content or "")
         except Exception as exc:
@@ -255,14 +269,16 @@ class AIService:
         )
 
         try:
-            response = await client.chat.completions.create(
+            response = await self.gateway.chat_completion(
                 model=settings.llm_model,
+                fallback_models=[item for item in str(settings.llm_fallback_models or "").split(",") if item.strip()],
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.55,
+                db=db,
             )
             payload = json.loads(response.choices[0].message.content or "{}")
             normalized = self._normalize_turn(payload)
@@ -279,21 +295,16 @@ class AIService:
             return self._fallback_turn(candidate_answer, role, transcript_history, normalized_type)
 
     async def synthesize_speech(self, text: str, db: AsyncSession | None = None) -> bytes:
-        client = await self._get_client(db)
-        if not client:
+        if not text.strip():
             return b""
 
         try:
-            response = await client.audio.speech.create(
+            return await self.gateway.synthesize_speech(
                 model=settings.tts_model,
                 voice=settings.tts_voice,
-                input=text,
-                response_format="mp3",
+                text_input=text,
+                db=db,
             )
-            data = response.read()
-            if hasattr(data, "__await__"):
-                data = await data
-            return data
         except Exception as exc:
             logger.warning("TTS generation failed; continuing without AI audio: %s", exc)
             return b""

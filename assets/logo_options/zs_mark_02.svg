@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ZS monogram option 2">
+  <defs>
+    <linearGradient id="left" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="#0b1220"/>
+  <rect x="44" y="44" width="210" height="424" rx="48" fill="url(#left)"/>
+  <rect x="258" y="44" width="210" height="424" rx="48" fill="url(#right)"/>
+  <path d="M136 142h112v37l-85 94h85v37H136v-37l85-94h-85z" fill="#ffffff"/>
+  <path d="M302 154c12-11 31-18 52-18 42 0 72 22 72 56 0 22-14 39-38 45 27 7 43 24 43 48 0 39-34 64-81 64-26 0-50-8-65-20l20-30c12 10 30 16 46 16 20 0 33-10 33-23 0-14-14-23-35-23h-21v-30h19c20 0 33-9 33-23 0-13-11-22-28-22-14 0-30 6-41 15z" fill="#ecfeff"/>
+</svg>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ZS monogram option 5">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+  <g transform="translate(74 74)">
+    <rect x="0" y="0" width="364" height="364" rx="66" fill="none" stroke="#334155" stroke-width="6"/>
+    <text x="40" y="220" fill="#e2e8f0" font-size="176" font-weight="900" font-family="Segoe UI, Arial, sans-serif">Z</text>
+    <text x="188" y="256" fill="url(#accent)" font-size="186" font-weight="900" font-family="Segoe UI, Arial, sans-serif">S</text>
+    <path d="M42 274h280" stroke="url(#accent)" stroke-width="10" stroke-linecap="round" opacity="0.85"/>
+  </g>
+</svg>

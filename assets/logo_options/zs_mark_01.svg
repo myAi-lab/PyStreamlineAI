@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ZS monogram option 1">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.42"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="118" fill="url(#bg)"/>
+  <path d="M60 112h392c12 0 20 13 14 24L120 460c-5 8-13 12-22 12H54c-11 0-19-11-15-21L397 124c5-8 13-12 22-12z" fill="url(#shine)"/>
+  <text x="124" y="315" fill="#ffffff" font-size="205" font-weight="800" font-family="Segoe UI, Arial, sans-serif">Z</text>
+  <text x="266" y="315" fill="#d1fae5" font-size="205" font-weight="800" font-family="Segoe UI, Arial, sans-serif">S</text>
+</svg>

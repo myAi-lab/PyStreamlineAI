@@ -20,6 +20,8 @@ def _normalize_database_url(database_url: str) -> str:
         normalized = normalized.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
     elif normalized.startswith("postgresql://"):
         normalized = normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+    elif normalized.startswith("sqlite://") and not normalized.startswith("sqlite+aiosqlite://"):
+        normalized = normalized.replace("sqlite://", "sqlite+aiosqlite://", 1)
 
     return normalized
 
@@ -58,6 +60,18 @@ async def _run_lightweight_migrations(connection) -> None:
             await connection.execute(
                 text("ALTER TABLE interview_sessions ADD COLUMN interview_type VARCHAR(32) NOT NULL DEFAULT 'mixed'")
             )
+        if "owner_user_id" not in columns:
+            await connection.execute(
+                text("ALTER TABLE interview_sessions ADD COLUMN owner_user_id VARCHAR(128) NOT NULL DEFAULT ''")
+            )
+        if "org_id" not in columns:
+            await connection.execute(
+                text("ALTER TABLE interview_sessions ADD COLUMN org_id VARCHAR(128) NOT NULL DEFAULT ''")
+            )
+        if "domain" not in columns:
+            await connection.execute(
+                text("ALTER TABLE interview_sessions ADD COLUMN domain VARCHAR(64) NOT NULL DEFAULT ''")
+            )
         return
 
     if dialect_name in {"postgresql", "postgres"}:
@@ -80,6 +94,9 @@ async def _run_lightweight_migrations(connection) -> None:
 
         postgres_alter_statements = [
             "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS interview_type VARCHAR(32) NOT NULL DEFAULT 'mixed'",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(128) NOT NULL DEFAULT ''",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS org_id VARCHAR(128) NOT NULL DEFAULT ''",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS domain VARCHAR(64) NOT NULL DEFAULT ''",
             "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS status interview_status NOT NULL DEFAULT 'in_progress'",
             "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS current_question TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS turn_count INTEGER NOT NULL DEFAULT 0",
@@ -93,3 +110,10 @@ async def _run_lightweight_migrations(connection) -> None:
         ]
         for statement in postgres_alter_statements:
             await connection.execute(text(statement))
+
+        await connection.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_interview_sessions_owner_user_id ON interview_sessions(owner_user_id)")
+        )
+        await connection.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_interview_sessions_org_id ON interview_sessions(org_id)")
+        )
