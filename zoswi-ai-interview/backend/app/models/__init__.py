@@ -1,45 +1,26 @@
-from app.models.interview import (
-    AIQuestion,
-    AppSetting,
-    CandidateResponse,
-    Competency,
-    ConversationTranscript,
-    EvaluationSummary,
-    FinalAssessment,
-    IntegrityEvent,
-    InterviewPlan,
-    InterviewPlanItem,
-    InterviewSession,
-    InterviewStatus,
-    InterviewTurn,
-    QuestionBank,
-    RecruiterReview,
-    RoleCompetency,
-    TranscriptSpeaker,
-    TurnScore,
-    UserInterviewQuota,
-    UsageLedger,
-)
+from app.models.audit_log import AuditLog
+from app.models.candidate_profile import CandidateProfile
+from app.models.interview import InterviewSession, InterviewSummary, InterviewTurn
+from app.models.job import PlatformJob
+from app.models.oauth_identity import OAuthIdentity
+from app.models.refresh_token import RefreshToken
+from app.models.resume import Resume
+from app.models.resume_analysis import ResumeAnalysis
+from app.models.user import User
+from app.models.workspace import WorkspaceMessage, WorkspaceSession
 
-__all__ = [
+__all__ = (
+    "AuditLog",
+    "CandidateProfile",
     "InterviewSession",
-    "ConversationTranscript",
-    "AppSetting",
-    "AIQuestion",
-    "CandidateResponse",
-    "EvaluationSummary",
+    "InterviewSummary",
     "InterviewTurn",
-    "TurnScore",
-    "IntegrityEvent",
-    "UsageLedger",
-    "UserInterviewQuota",
-    "Competency",
-    "RoleCompetency",
-    "QuestionBank",
-    "InterviewPlan",
-    "InterviewPlanItem",
-    "FinalAssessment",
-    "RecruiterReview",
-    "InterviewStatus",
-    "TranscriptSpeaker",
-]
+    "OAuthIdentity",
+    "PlatformJob",
+    "RefreshToken",
+    "Resume",
+    "ResumeAnalysis",
+    "User",
+    "WorkspaceMessage",
+    "WorkspaceSession",
+)

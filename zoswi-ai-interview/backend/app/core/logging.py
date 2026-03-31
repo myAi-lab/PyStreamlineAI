@@ -1,43 +1,42 @@
 import logging
-import json
 import sys
-from datetime import datetime, timezone
-from typing import Any
+
+import structlog
+
+from app.core.config import Settings
+from app.core.correlation import get_request_id
 
 
-class JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        extras = {
-            "request_id",
-            "session_id",
-            "user_id",
-            "model_used",
-            "latency",
-            "cost_usd",
-        }
-        for field in extras:
-            if hasattr(record, field):
-                payload[field] = getattr(record, field)
-        if record.exc_info:
-            exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
-            exc_message = str(record.exc_info[1]) if record.exc_info[1] else ""
-            payload["exception_type"] = exc_type
-            payload["exception_message"] = exc_message
-            payload["traceback"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=True)
+def _inject_request_id(_, __, event_dict: dict) -> dict:
+    request_id = get_request_id()
+    if request_id:
+        event_dict["request_id"] = request_id
+    return event_dict
 
 
-def configure_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonLogFormatter())
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[handler],
-        force=True,
+def configure_logging(settings: Settings) -> None:
+    timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)
+
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            _inject_request_id,
+            structlog.processors.add_log_level,
+            timestamper,
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(
+            logging.DEBUG if settings.debug else logging.INFO
+        ),
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
     )
+
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=logging.DEBUG if settings.debug else logging.INFO,
+    )
+

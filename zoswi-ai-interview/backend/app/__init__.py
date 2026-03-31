@@ -1,2 +1,2 @@
-"""ZoSwi AI interview backend package."""
+"""ZoSwi platform backend package."""
 

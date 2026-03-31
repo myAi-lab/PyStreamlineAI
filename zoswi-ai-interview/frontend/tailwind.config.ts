@@ -2,21 +2,36 @@ import type { Config } from "tailwindcss";
 
 const config: Config = {
   content: [
-    "./app/**/*.{js,ts,jsx,tsx,mdx}",
-    "./components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./lib/**/*.{js,ts,jsx,tsx,mdx}"
+    "./app/**/*.{ts,tsx}",
+    "./components/**/*.{ts,tsx}",
+    "./hooks/**/*.{ts,tsx}",
+    "./lib/**/*.{ts,tsx}",
+    "./services/**/*.{ts,tsx}"
   ],
   theme: {
     extend: {
+      fontFamily: {
+        heading: ["var(--font-heading)"],
+        body: ["var(--font-body)"]
+      },
       colors: {
-        background: "#f6f8f4",
-        surface: "#ffffff",
-        ink: "#101828",
-        accent: "#0f766e",
-        accentSoft: "#ccfbf1"
+        surface: "#081323",
+        card: "#11213a",
+        brand: {
+          50: "#edfdfe",
+          100: "#cff9fb",
+          200: "#a2f0f6",
+          300: "#67e2ef",
+          400: "#2bcadf",
+          500: "#14a8c0",
+          600: "#14869f",
+          700: "#166c81",
+          800: "#1a5869",
+          900: "#1b4a58"
+        }
       },
       boxShadow: {
-        panel: "0 18px 38px rgba(16, 24, 40, 0.1)"
+        soft: "0 20px 45px -18px rgba(8, 19, 35, 0.55)"
       }
     }
   },
@@ -24,4 +39,3 @@ const config: Config = {
 };
 
 export default config;
-

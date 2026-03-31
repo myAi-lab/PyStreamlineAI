@@ -6,63 +6,132 @@
   color-scheme: dark;
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
-  min-height: 100vh;
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
   background:
-    radial-gradient(circle at 10% 8%, rgba(76, 201, 255, 0.38) 0%, transparent 34%),
-    radial-gradient(circle at 86% 6%, rgba(45, 212, 191, 0.3) 0%, transparent 36%),
-    radial-gradient(circle at 52% 100%, rgba(250, 204, 21, 0.22) 0%, transparent 45%),
-    linear-gradient(145deg, #123056 0%, #1a4474 45%, #26618b 100%);
-  color: #f2f7ff;
+    radial-gradient(circle at 20% 20%, rgba(20, 168, 192, 0.22), transparent 38%),
+    radial-gradient(circle at 80% 0%, rgba(22, 108, 129, 0.22), transparent 35%),
+    linear-gradient(170deg, #060f1e 0%, #081323 45%, #0b182a 100%);
+  color: #e2e8f0;
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 18% 20%, rgba(255, 255, 255, 0.08) 0%, transparent 34%),
-    radial-gradient(circle at 82% 82%, rgba(255, 255, 255, 0.06) 0%, transparent 36%);
+a {
+  color: inherit;
+  text-decoration: none;
 }
 
-.panel {
-  @apply rounded-2xl border border-white/20 bg-[linear-gradient(165deg,rgba(17,40,66,0.72),rgba(18,46,74,0.62))] backdrop-blur-xl shadow-[0_18px_42px_rgba(8,18,38,0.35)];
+.interview-banner-wrap {
+  overflow: hidden;
 }
 
-.soft-input {
-  @apply mt-2 w-full rounded-xl border border-white/20 bg-slate-900/45 px-3.5 py-2.5 text-slate-50 outline-none ring-0 transition placeholder:text-slate-300/70 focus:border-cyan-200/70 focus:bg-slate-900/65;
+.interview-banner-track {
+  display: inline-flex;
+  min-width: max-content;
+  padding-right: 2rem;
+  animation: interview-marquee 22s linear infinite;
 }
 
-.premium-chip {
-  @apply rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-200;
+.interview-wave-bar {
+  transform-origin: bottom center;
+  animation: interview-wave 1s ease-in-out infinite;
 }
 
-.primary-btn {
-  @apply rounded-xl border border-cyan-200/45 bg-[linear-gradient(120deg,rgba(54,201,255,0.95),rgba(35,233,186,0.92))] px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_8px_20px_rgba(8,145,178,0.36)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none;
+.interview-wave-delay-1 {
+  animation-delay: 0.1s;
 }
 
-.ghost-btn {
-  @apply rounded-xl border border-white/20 bg-white/10 px-5 py-2.5 text-sm font-semibold text-slate-100 transition hover:bg-white/15 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-700 disabled:text-slate-400;
+.interview-wave-delay-2 {
+  animation-delay: 0.2s;
 }
 
-.danger-btn {
-  @apply rounded-xl border border-rose-300/45 bg-[linear-gradient(120deg,rgba(251,113,133,0.95),rgba(244,63,94,0.92))] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(190,24,93,0.32)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none;
+.interview-wave-delay-3 {
+  animation-delay: 0.3s;
 }
 
-.transcript-scroll::-webkit-scrollbar {
-  width: 9px;
+.interview-wave-delay-4 {
+  animation-delay: 0.4s;
 }
 
-.transcript-scroll::-webkit-scrollbar-track {
-  background: transparent;
+@keyframes interview-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-55%);
+  }
 }
 
-.transcript-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.35);
+@keyframes interview-wave {
+  0%,
+  100% {
+    transform: scaleY(0.6);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1.2);
+    opacity: 1;
+  }
 }
 
-.transcript-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.55);
+.ai-mouth-animate {
+  animation: ai-mouth-open 0.45s ease-in-out infinite;
+}
+
+@keyframes ai-mouth-open {
+  0%,
+  100% {
+    transform: scaleX(1) scaleY(0.85);
+  }
+  50% {
+    transform: scaleX(1.05) scaleY(1.18);
+  }
+}
+
+.ai-buzz-ring-slow {
+  animation: ai-buzz-ring 3.8s ease-in-out infinite;
+}
+
+.ai-buzz-ring-mid {
+  animation: ai-buzz-ring 2.2s ease-in-out infinite;
+}
+
+.ai-buzz-ring-fast {
+  animation: ai-buzz-ring 1.25s ease-in-out infinite;
+}
+
+.ai-buzz-core {
+  animation: ai-buzz-core 1.25s ease-in-out infinite;
+}
+
+@keyframes ai-buzz-ring {
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes ai-buzz-core {
+  0%,
+  100% {
+    transform: scale(0.96);
+    box-shadow: 0 0 22px rgba(34, 211, 238, 0.35);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 0 36px rgba(34, 211, 238, 0.6);
+  }
 }

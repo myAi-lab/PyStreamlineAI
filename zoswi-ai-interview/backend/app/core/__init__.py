@@ -1,2 +1,2 @@
-"""Core settings and infrastructure."""
+"""Core infrastructure utilities."""
 
