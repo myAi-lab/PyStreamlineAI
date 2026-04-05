@@ -112,6 +112,791 @@ def render_app_styles() -> None:
             font-size: 0.76rem;
             margin-bottom: 8px;
         }
+        .careers-workspace-shell {
+            margin: 0 0 0.85rem 0;
+        }
+        .careers-workspace-header {
+            border: 1px solid #dbeafe;
+            border-radius: 16px;
+            padding: 0.82rem 0.95rem;
+            background: linear-gradient(120deg, #ffffff 0%, #f0f9ff 100%);
+            box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+        }
+        .careers-workspace-header h3 {
+            margin: 0;
+            color: #0f172a;
+            font-size: 1.06rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+        }
+        .careers-workspace-header p {
+            margin: 0.2rem 0 0 0;
+            color: #475569;
+            font-size: 0.85rem;
+            line-height: 1.38;
+        }
+        .st-key-careers_workspace_scope [data-baseweb="tab-list"] {
+            gap: 0.34rem;
+            border-bottom: 1px solid #dbeafe;
+            padding-bottom: 0.24rem;
+            margin-bottom: 0.42rem;
+        }
+        .st-key-careers_workspace_scope [data-baseweb="tab"] {
+            border: 1px solid #d1d5db !important;
+            border-radius: 10px 10px 0 0 !important;
+            background: #f8fafc !important;
+            color: #334155 !important;
+            font-weight: 700 !important;
+            min-height: 2.1rem !important;
+            padding: 0.26rem 0.82rem !important;
+            transition: all 0.16s ease;
+        }
+        .st-key-careers_workspace_scope [data-baseweb="tab"][aria-selected="true"] {
+            border-color: #93c5fd !important;
+            background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%) !important;
+            color: #0f172a !important;
+            box-shadow: 0 6px 12px rgba(30, 64, 175, 0.08);
+        }
+        .st-key-careers_workspace_scope [data-testid="stForm"] {
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+            padding: 0.72rem 0.84rem 0.52rem 0.84rem;
+        }
+        .st-key-careers_workspace_scope [data-testid="stTextInputRootElement"] input,
+        .st-key-careers_workspace_scope [data-testid="stTextArea"] textarea,
+        .st-key-careers_workspace_scope [data-baseweb="select"] > div,
+        .st-key-careers_workspace_scope [data-testid="stNumberInputContainer"] {
+            border-radius: 10px !important;
+            border: 1px solid #d1d5db !important;
+            background: #ffffff !important;
+        }
+        .st-key-careers_workspace_scope [data-testid="stTextInputRootElement"] input:focus,
+        .st-key-careers_workspace_scope [data-testid="stTextArea"] textarea:focus {
+            border-color: #2563eb !important;
+            box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.16) !important;
+        }
+        .st-key-careers_workspace_scope .stButton button,
+        .st-key-careers_workspace_scope [data-testid^="baseButton-secondary"] {
+            border-radius: 10px !important;
+            min-height: 2rem !important;
+            font-weight: 700 !important;
+        }
+        .careers-find-matches-powered {
+            text-align: left;
+            color: #64748b;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            margin: 0.04rem 0 0.28rem 0;
+        }
+        div[class*="st-key-careers_find_matches_btn"] {
+            display: flex;
+            justify-content: flex-start;
+        }
+        [class*="st-key-careers_find_matches_btn"] button {
+            border: 1px solid #0f766e !important;
+            background: linear-gradient(135deg, #12b5bd 0%, #1d4ed8 100%) !important;
+            color: #ffffff !important;
+            border-radius: 999px !important;
+            min-height: 2.64rem !important;
+            max-width: 13.8rem !important;
+            font-size: 1.02rem !important;
+            font-weight: 800 !important;
+            letter-spacing: 0.01em !important;
+            padding: 0.2rem 1rem !important;
+            box-shadow: 0 10px 20px rgba(14, 116, 144, 0.22) !important;
+        }
+        [class*="st-key-careers_find_matches_btn"] button:hover {
+            border-color: #0e7490 !important;
+            background: linear-gradient(135deg, #0ea5b4 0%, #1e40af 100%) !important;
+            color: #ffffff !important;
+        }
+        .st-key-careers_role_suggestions_shell {
+            border: 1px solid #dbeafe;
+            border-radius: 12px;
+            padding: 0.46rem 0.58rem 0.52rem 0.58rem;
+            background: #ffffff;
+            margin: 0.14rem 0 0.56rem 0;
+            box-shadow: 0 6px 14px rgba(15, 23, 42, 0.03);
+        }
+        .st-key-careers_role_suggestions_shell .stButton button {
+            min-height: 1.82rem !important;
+            border-radius: 999px !important;
+            border: 1px solid #bfdbfe !important;
+            background: #eff6ff !important;
+            color: #0c4a6e !important;
+            font-size: 0.8rem !important;
+            font-weight: 700 !important;
+            padding: 0.08rem 0.64rem !important;
+            box-shadow: none !important;
+        }
+        .st-key-careers_role_suggestions_shell .stButton button:hover {
+            border-color: #60a5fa !important;
+            background: #dbeafe !important;
+            color: #0f172a !important;
+        }
+        .st-key-careers_setup_role_hints_shell {
+            border: 1px solid #dbeafe;
+            border-radius: 12px;
+            padding: 0.42rem 0.56rem 0.5rem 0.56rem;
+            background: #ffffff;
+            margin: 0.14rem 0 0.44rem 0;
+            box-shadow: 0 6px 14px rgba(15, 23, 42, 0.03);
+        }
+        .st-key-careers_setup_role_hints_shell .stButton button {
+            min-height: 1.8rem !important;
+            border-radius: 999px !important;
+            border: 1px solid #bfdbfe !important;
+            background: #eff6ff !important;
+            color: #0c4a6e !important;
+            font-size: 0.8rem !important;
+            font-weight: 700 !important;
+            padding: 0.08rem 0.64rem !important;
+            box-shadow: none !important;
+        }
+        .st-key-careers_setup_role_hints_shell .stButton button:hover {
+            border-color: #60a5fa !important;
+            background: #dbeafe !important;
+            color: #0f172a !important;
+        }
+        .careers-job-card,
+        .careers-saved-card,
+        .careers-app-card {
+            border: 1px solid #dbeafe;
+            border-radius: 16px;
+            background: #ffffff;
+            padding: 0.84rem 0.95rem;
+            margin: 0.44rem 0 0.42rem 0;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+        }
+        .careers-job-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.9rem;
+        }
+        .careers-job-title,
+        .careers-saved-title,
+        .careers-app-title {
+            margin: 0;
+            font-size: 1.01rem;
+            font-weight: 800;
+            color: #0f172a;
+            line-height: 1.28;
+        }
+        .careers-job-meta,
+        .careers-job-submeta,
+        .careers-saved-meta,
+        .careers-app-meta,
+        .careers-app-date {
+            margin-top: 0.22rem;
+            color: #334155;
+            font-size: 0.845rem;
+            line-height: 1.3;
+        }
+        .careers-job-recent {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 0.3rem;
+            width: fit-content;
+            border-radius: 999px;
+            border: 1px solid #86efac;
+            background: #f0fdf4;
+            color: #166534;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+            padding: 0.12rem 0.52rem;
+            cursor: help;
+        }
+        .careers-job-recent-24h {
+            border-color: #4ade80;
+            background: #dcfce7;
+            color: #14532d;
+        }
+        .careers-job-recent-3d {
+            border-color: #86efac;
+            background: #f0fdf4;
+            color: #166534;
+        }
+        .careers-app-status {
+            margin-top: 0.3rem;
+            color: #0f766e;
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        .careers-job-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            border: 1px solid #99f6e4;
+            background: #ecfeff;
+            color: #0f766e;
+            font-size: 0.78rem;
+            font-weight: 800;
+            padding: 0.2rem 0.62rem;
+            white-space: nowrap;
+        }
+        .careers-job-badge-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.32rem;
+        }
+        .careers-job-reco {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+            padding: 0.14rem 0.58rem;
+            border: 1px solid transparent;
+        }
+        .careers-job-reco-high {
+            border-color: #86efac;
+            background: #f0fdf4;
+            color: #166534;
+        }
+        .careers-job-reco-mid {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+        .careers-job-reco-low {
+            border-color: #fde68a;
+            background: #fffbeb;
+            color: #92400e;
+        }
+        .careers-job-verified {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.28rem;
+            border-radius: 999px;
+            border: 1px solid #86efac;
+            background: #f0fdf4;
+            color: #166534;
+            font-size: 0.69rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+            padding: 0.12rem 0.46rem 0.12rem 0.34rem;
+            cursor: help;
+        }
+        .careers-job-verified-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 0.84rem;
+            height: 0.84rem;
+            flex: 0 0 auto;
+        }
+        .careers-job-verified-icon svg {
+            width: 100%;
+            height: 100%;
+            fill: #16a34a;
+        }
+        .careers-job-why {
+            margin-top: 0.45rem;
+            color: #1e293b;
+            font-size: 0.88rem;
+            line-height: 1.4;
+        }
+        .careers-job-why ul {
+            margin: 0.3rem 0 0 1rem;
+            padding: 0;
+        }
+        .careers-job-why li {
+            margin: 0.14rem 0;
+        }
+        .careers-job-summary {
+            margin-top: 0.36rem;
+            color: #0f172a;
+            font-size: 0.86rem;
+            line-height: 1.4;
+        }
+        .careers-job-note {
+            margin-top: 0.28rem;
+            color: #92400e;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            padding: 0.1rem 0.42rem;
+        }
+        .careers-job-desc {
+            margin-top: 0.34rem;
+            color: #0f172a;
+            font-size: 0.85rem;
+            line-height: 1.42;
+        }
+        .careers-job-reco-inline {
+            margin-top: 0.36rem;
+            color: #1e293b;
+            font-size: 0.83rem;
+            display: flex;
+            align-items: center;
+            gap: 0.36rem;
+        }
+        .careers-job-reco-inline .careers-job-reco-high,
+        .careers-job-reco-inline .careers-job-reco-mid,
+        .careers-job-reco-inline .careers-job-reco-low {
+            padding: 0.12rem 0.44rem;
+            border-radius: 999px;
+            font-size: 0.74rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .careers-job-chips {
+            margin-top: 0.38rem;
+            color: #334155;
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }
+        .careers-job-actions {
+            margin-top: 0.36rem;
+            color: #1e293b;
+            font-size: 0.81rem;
+            line-height: 1.35;
+        }
+        .careers-job-actions ul {
+            margin: 0.24rem 0 0 1rem;
+            padding: 0;
+        }
+        .careers-job-actions li {
+            margin: 0.16rem 0;
+        }
+        .careers-job-detail-body {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background: #f8fafc;
+            padding: 0.62rem 0.74rem;
+            max-height: 420px;
+            overflow: auto;
+            color: #0f172a;
+            font-size: 0.84rem;
+            line-height: 1.42;
+            white-space: normal;
+        }
+        .careers-job-detail-meta {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background: #ffffff;
+            padding: 0.56rem 0.62rem;
+            color: #1e293b;
+            font-size: 0.79rem;
+            line-height: 1.42;
+            display: flex;
+            flex-direction: column;
+            gap: 0.26rem;
+        }
+        .careers-job-detail-skills {
+            margin-top: 0.46rem;
+            color: #334155;
+            font-size: 0.81rem;
+            line-height: 1.35;
+        }
+        .careers-skill-chip {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid #bae6fd;
+            border-radius: 999px;
+            background: #f0f9ff;
+            color: #0c4a6e;
+            font-size: 0.74rem;
+            font-weight: 700;
+            padding: 0.1rem 0.52rem;
+            margin: 0 0.26rem 0.24rem 0;
+        }
+        .careers-ai-summary {
+            border: 1px solid #dbeafe;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+            padding: 0.62rem 0.74rem;
+            margin: 0.2rem 0 0.62rem 0;
+        }
+        .careers-ai-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.4rem;
+        }
+        .careers-ai-summary-item {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            background: #ffffff;
+            padding: 0.36rem 0.48rem;
+        }
+        .careers-ai-summary-label {
+            font-size: 0.73rem;
+            color: #475569;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .careers-ai-summary-value {
+            font-size: 1.02rem;
+            color: #0f172a;
+            font-weight: 800;
+            line-height: 1.22;
+            margin-top: 0.08rem;
+        }
+        .careers-ai-summary-foot {
+            margin-top: 0.45rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            font-size: 0.79rem;
+            color: #334155;
+        }
+        .careers-resource-card {
+            border: 1px solid #dbeafe;
+            border-radius: 12px;
+            background: #f8fbff;
+            padding: 0.48rem 0.64rem;
+            margin: 0.18rem 0 0.32rem 0;
+        }
+        .careers-resource-title {
+            color: #0f172a;
+            font-size: 0.86rem;
+            font-weight: 800;
+            line-height: 1.25;
+        }
+        .careers-resource-subtitle {
+            margin-top: 0.16rem;
+            color: #475569;
+            font-size: 0.78rem;
+            line-height: 1.35;
+        }
+        .st-key-careers_resources_hub [data-baseweb="tab-list"] {
+            gap: 0.24rem;
+            border-bottom: 1px solid #dbeafe;
+            padding-bottom: 0.18rem;
+            margin-bottom: 0.36rem;
+        }
+        .st-key-careers_resources_hub [data-baseweb="tab"] {
+            border: 1px solid #d1d5db !important;
+            border-radius: 9px 9px 0 0 !important;
+            background: #f8fafc !important;
+            color: #334155 !important;
+            font-weight: 700 !important;
+            min-height: 1.9rem !important;
+            padding: 0.18rem 0.62rem !important;
+            font-size: 0.8rem !important;
+        }
+        .st-key-careers_resources_hub [data-baseweb="tab"][aria-selected="true"] {
+            border-color: #93c5fd !important;
+            background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%) !important;
+            color: #0f172a !important;
+        }
+        .st-key-careers_resources_hub a {
+            color: #0f3b66 !important;
+            text-decoration: none !important;
+            font-weight: 600 !important;
+            font-size: 0.82rem !important;
+            line-height: 1.35 !important;
+        }
+        .st-key-careers_resources_hub a:hover {
+            color: #075985 !important;
+            text-decoration: underline !important;
+        }
+        [class*="st-key-careers_save_job_"] button,
+        [class*="st-key-careers_add_job_"] button,
+        [class*="st-key-careers_saved_remove_"] button {
+            border: 1px solid #94a3b8 !important;
+            background: #f8fafc !important;
+            color: #0f172a !important;
+        }
+        [class*="st-key-careers_apply_job_"] button,
+        [class*="st-key-careers_saved_move_"] button,
+        [class*="st-key-careers_app_update_"] button {
+            border: 1px solid #0ea5e9 !important;
+            background: linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%) !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-careers_save_job_"] button,
+        [class*="st-key-careers_add_job_"] button,
+        [class*="st-key-careers_apply_job_"] button {
+            min-height: 1.62rem !important;
+            font-size: 0.78rem !important;
+            line-height: 1.1 !important;
+            padding: 0.05rem 0.55rem !important;
+            border-radius: 8px !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            white-space: nowrap !important;
+        }
+        [class*="st-key-careers_saved_move_"] button,
+        [class*="st-key-careers_saved_remove_"] button,
+        [class*="st-key-careers_app_update_"] button {
+            min-height: 1.72rem !important;
+            font-size: 0.82rem !important;
+            padding: 0.12rem 0.78rem !important;
+            border-radius: 9px !important;
+        }
+        [class*="st-key-careers_saved_move_"] button,
+        [class*="st-key-careers_saved_remove_"] button {
+            width: 100% !important;
+            min-width: 0 !important;
+        }
+        [class*="st-key-careers_app_update_"] button {
+            width: auto !important;
+            min-width: 6.1rem !important;
+        }
+        div[class*="st-key-careers_saved_move_"],
+        div[class*="st-key-careers_saved_remove_"] {
+            padding-top: 1.34rem;
+        }
+        div[class*="st-key-careers_app_update_"] {
+            padding-top: 1.58rem;
+        }
+        [class*="st-key-careers_save_job_"] button:hover,
+        [class*="st-key-careers_add_job_"] button:hover,
+        [class*="st-key-careers_saved_remove_"] button:hover {
+            border-color: #64748b !important;
+            background: #f1f5f9 !important;
+        }
+        [class*="st-key-careers_apply_job_"] button:hover,
+        [class*="st-key-careers_saved_move_"] button:hover,
+        [class*="st-key-careers_app_update_"] button:hover {
+            border-color: #0369a1 !important;
+            background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%) !important;
+        }
+        .st-key-resume_builder_profile_form {
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 0.78rem 0.86rem 0.32rem 0.86rem;
+            background: #ffffff;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+            margin: 0.18rem 0 0.72rem 0;
+        }
+        .resume-builder-hero {
+            border: 1px solid #dbeafe;
+            border-radius: 16px;
+            padding: 0.78rem 0.9rem;
+            margin: 0.12rem 0 0.66rem 0;
+            background: linear-gradient(120deg, #ffffff 0%, #f8fafc 100%);
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+        }
+        .resume-builder-hero-icon-wrap {
+            width: 2.2rem;
+            height: 2.2rem;
+            border-radius: 12px;
+            border: 1px solid #a5b4fc;
+            background: #e0e7ff;
+            color: #3730a3;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+        .resume-builder-hero-icon-wrap .material-symbols-outlined {
+            line-height: 1;
+            font-size: 1.18rem;
+            font-variation-settings: "FILL" 0, "wght" 550, "GRAD" 0, "opsz" 24;
+        }
+        .resume-builder-hero h3 {
+            margin: 0;
+            font-size: 1.04rem;
+            font-weight: 800;
+            color: #0f172a;
+            letter-spacing: 0.01em;
+        }
+        .resume-builder-hero p {
+            margin: 0.16rem 0 0 0;
+            color: #334155;
+            font-size: 0.84rem;
+            line-height: 1.35;
+        }
+        .resume-builder-section-head {
+            display: block;
+            margin: 0.68rem 0 0.3rem 0;
+        }
+        .resume-builder-section-row {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.52rem;
+            min-height: 1.52rem;
+        }
+        .resume-builder-section-icon {
+            width: 1.5rem;
+            height: 1.5rem;
+            border-radius: 8px;
+            border: 1px solid #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            font-size: 1.02rem;
+            line-height: 1;
+            margin: 0;
+            font-variation-settings: "FILL" 0, "wght" 550, "GRAD" 0, "opsz" 24;
+        }
+        .resume-builder-section-row h4 {
+            margin: 0;
+            color: #0f172a;
+            font-size: 0.935rem;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+        .resume-builder-section-subtitle {
+            margin: 0.2rem 0 0 2.02rem;
+            color: #64748b;
+            font-size: 0.785rem;
+            line-height: 1.3;
+        }
+        .st-key-resume_builder_profile_form [data-testid="stExpander"] {
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+        }
+        .st-key-resume_builder_profile_form [data-testid="stTextInputRootElement"] input,
+        .st-key-resume_builder_profile_form [data-testid="stTextArea"] textarea {
+            border: 1px solid #d1d5db !important;
+            border-radius: 10px !important;
+            background: #ffffff !important;
+        }
+        .st-key-resume_builder_profile_form [data-testid="stNumberInputContainer"] {
+            border-radius: 10px !important;
+            border: 1px solid #d1d5db !important;
+            background: #ffffff !important;
+        }
+        .st-key-resume_builder_profile_form [data-testid="stTextInputRootElement"] input:focus,
+        .st-key-resume_builder_profile_form [data-testid="stTextArea"] textarea:focus {
+            border-color: #2563eb !important;
+            box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.18) !important;
+        }
+        .st-key-resume_builder_generate_btn button {
+            border: 1px solid #0284c7 !important;
+            background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%) !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+        }
+        .st-key-resume_builder_save_draft_btn button,
+        .st-key-resume_builder_load_latest_btn button,
+        .st-key-resume_builder_load_selected_btn button {
+            border: 1px solid #94a3b8 !important;
+            background: #f8fafc !important;
+            color: #0f172a !important;
+            font-weight: 700 !important;
+        }
+        .st-key-resume_builder_history_shell {
+            border: 1px solid #e5e7eb;
+            border-radius: 14px;
+            padding: 0.62rem 0.78rem 0.52rem 0.78rem;
+            background: #ffffff;
+            margin: 0.2rem 0 0.68rem 0;
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.03);
+        }
+        .st-key-resume_scan_rag_shell {
+            border: 1px solid #dbeafe;
+            border-radius: 14px;
+            padding: 0.64rem 0.78rem 0.58rem 0.78rem;
+            background: #f8fbff;
+            margin: 0.24rem 0 0.76rem 0;
+            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.06);
+        }
+        .st-key-resume_scan_rag_shell [data-testid="stFileUploaderDropzone"] {
+            border: 1px dashed #93c5fd !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+        }
+        .st-key-resume_scan_rag_shell [data-testid="stFileUploaderDropzone"]:hover {
+            border-color: #2563eb !important;
+            background: #eff6ff !important;
+        }
+        .st-key-resume_preview_shell {
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 0.62rem 0.78rem 0.6rem 0.78rem;
+            background: #ffffff;
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.03);
+            margin: 0.16rem 0 0.64rem 0;
+        }
+        .st-key-resume_actions_download_shell {
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 0.52rem 0.68rem;
+            background: #ffffff;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+            margin: 0.2rem 0 0.52rem 0;
+        }
+        .st-key-resume_actions_download_shell [data-testid="stHorizontalBlock"] {
+            align-items: center !important;
+            gap: 0.48rem !important;
+        }
+        .st-key-resume_actions_download_shell button {
+            min-height: 2rem !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+        }
+        .st-key-rb_scan_analyze_btn button,
+        .st-key-rb_scan_apply_btn button {
+            border: 1px solid #1d4ed8 !important;
+            background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%) !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            border-radius: 10px !important;
+        }
+        .st-key-careers_workspace_scope .stMarkdown a {
+            color: #0369a1;
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .st-key-careers_workspace_scope .stMarkdown a:hover {
+            color: #0c4a6e;
+            text-decoration: underline;
+        }
+        @media (max-width: 900px) {
+            .careers-job-head {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.4rem;
+            }
+            .careers-job-badge,
+            .careers-job-reco {
+                align-self: flex-start;
+            }
+            .careers-job-badge-wrap {
+                align-items: flex-start;
+            }
+            .careers-ai-summary-grid {
+                grid-template-columns: 1fr;
+            }
+            .st-key-careers_workspace_scope [data-baseweb="tab"] {
+                min-height: 1.95rem !important;
+                font-size: 0.84rem !important;
+                padding: 0.24rem 0.58rem !important;
+            }
+            [class*="st-key-careers_find_matches_btn"] button {
+                max-width: 100% !important;
+                font-size: 0.96rem !important;
+            }
+            .st-key-resume_actions_download_shell [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+            }
+            div[class*="st-key-careers_saved_move_"],
+            div[class*="st-key-careers_saved_remove_"] {
+                padding-top: 0 !important;
+            }
+            div[class*="st-key-careers_app_update_"] {
+                padding-top: 0 !important;
+            }
+        }
         .ai-muted {
             color: var(--ai-muted);
             font-size: 0.92rem;
@@ -1067,6 +1852,130 @@ def render_app_styles() -> None:
             align-items: center;
             gap: 0.4rem !important;
         }
+        .st-key-magic_login_verify_actions [data-testid="stHorizontalBlock"] {
+            align-items: center;
+            justify-content: flex-start;
+            gap: 0 !important;
+            column-gap: 0 !important;
+            row-gap: 0 !important;
+        }
+        .st-key-magic_login_verify_actions [data-testid="column"] {
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+        }
+        .st-key-magic_login_send_btn .stButton > button,
+        .st-key-magic_login_send_btn button,
+        .st-key-magic_login_send_btn [data-testid^="baseButton"],
+        .st-key-magic_login_send_action .stButton > button,
+        .st-key-magic_login_send_action button,
+        .st-key-magic_login_send_action [data-testid^="baseButton"] {
+            border: none !important;
+            background: linear-gradient(120deg, #0284c7 0%, #0ea5e9 58%, #22d3ee 100%) !important;
+            color: #ffffff !important;
+            border-radius: 999px !important;
+            min-height: 2rem !important;
+            font-size: 0.8rem !important;
+            font-weight: 800 !important;
+            padding: 0.18rem 0.86rem !important;
+            box-shadow: 0 10px 20px rgba(2, 132, 199, 0.26) !important;
+            transition: transform 130ms ease, border-color 130ms ease, filter 130ms ease, box-shadow 130ms ease !important;
+        }
+        .st-key-magic_login_send_btn .stButton > button:hover,
+        .st-key-magic_login_send_btn button:hover,
+        .st-key-magic_login_send_btn [data-testid^="baseButton"]:hover,
+        .st-key-magic_login_send_action .stButton > button:hover,
+        .st-key-magic_login_send_action button:hover,
+        .st-key-magic_login_send_action [data-testid^="baseButton"]:hover {
+            transform: translateY(-1px) !important;
+            filter: brightness(1.05);
+            box-shadow: 0 12px 22px rgba(2, 132, 199, 0.3) !important;
+        }
+        .st-key-magic_login_verify_btn .stButton > button,
+        .st-key-magic_login_verify_btn button,
+        .st-key-magic_login_verify_btn [data-testid^="baseButton"] {
+            border: none !important;
+            background: linear-gradient(120deg, #0f766e 0%, #14b8a6 58%, #2dd4bf 100%) !important;
+            color: #ffffff !important;
+            border-radius: 7px !important;
+            min-height: 1.42rem !important;
+            min-width: 3.55rem !important;
+            width: 100% !important;
+            padding: 0.04rem 0.42rem !important;
+            font-size: 0.66rem !important;
+            font-weight: 700 !important;
+            box-shadow: 0 3px 8px rgba(15, 118, 110, 0.18) !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: transform 130ms ease, filter 130ms ease !important;
+        }
+        .st-key-magic_login_verify_btn .stButton > button:hover,
+        .st-key-magic_login_verify_btn button:hover,
+        .st-key-magic_login_verify_btn [data-testid^="baseButton"]:hover {
+            transform: translateY(-1px) !important;
+            filter: brightness(1.05);
+        }
+        .st-key-magic_login_resend_btn .stButton > button,
+        .st-key-magic_login_resend_btn button,
+        .st-key-magic_login_resend_btn [data-testid^="baseButton"] {
+            border: none !important;
+            background: linear-gradient(120deg, #eff9ff 0%, #e0f2fe 100%) !important;
+            color: #0369a1 !important;
+            border-radius: 7px !important;
+            min-height: 1.42rem !important;
+            min-width: 3.55rem !important;
+            width: 100% !important;
+            padding: 0.04rem 0.42rem !important;
+            font-size: 0.66rem !important;
+            font-weight: 700 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: transform 120ms ease, filter 120ms ease !important;
+        }
+        .st-key-magic_login_resend_btn .stButton > button:hover,
+        .st-key-magic_login_resend_btn button:hover,
+        .st-key-magic_login_resend_btn [data-testid^="baseButton"]:hover {
+            transform: translateY(-1px) !important;
+            filter: brightness(1.03);
+        }
+        .st-key-magic_login_cancel_btn .stButton > button,
+        .st-key-magic_login_cancel_btn button,
+        .st-key-magic_login_cancel_btn [data-testid^="baseButton"] {
+            border: none !important;
+            background: linear-gradient(120deg, #ffffff 0%, #f8fafc 100%) !important;
+            color: #475569 !important;
+            border-radius: 7px !important;
+            min-height: 1.42rem !important;
+            min-width: 3.55rem !important;
+            width: 100% !important;
+            padding: 0.04rem 0.42rem !important;
+            font-size: 0.66rem !important;
+            font-weight: 700 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: transform 120ms ease, filter 120ms ease !important;
+        }
+        .st-key-magic_login_cancel_btn .stButton > button:hover,
+        .st-key-magic_login_cancel_btn button:hover,
+        .st-key-magic_login_cancel_btn [data-testid^="baseButton"]:hover {
+            transform: translateY(-1px) !important;
+            filter: brightness(1.02);
+        }
+        .st-key-magic_login_send_btn .stButton > button:focus,
+        .st-key-magic_login_send_btn .stButton > button:focus-visible,
+        .st-key-magic_login_verify_btn .stButton > button:focus,
+        .st-key-magic_login_verify_btn .stButton > button:focus-visible,
+        .st-key-magic_login_resend_btn .stButton > button:focus,
+        .st-key-magic_login_resend_btn .stButton > button:focus-visible,
+        .st-key-magic_login_cancel_btn .stButton > button:focus,
+        .st-key-magic_login_cancel_btn .stButton > button:focus-visible {
+            outline: none !important;
+            box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.26) !important;
+        }
         .st-key-email_verify_btn .stButton > button,
         .st-key-email_verify_btn button,
         .st-key-email_verify_btn [data-testid^="baseButton"] {
@@ -1972,6 +2881,30 @@ def render_app_styles() -> None:
                 width: 100% !important;
                 min-height: 2.25rem !important;
                 font-size: 0.9rem !important;
+            }
+            .st-key-magic_login_send_btn .stButton > button,
+            .st-key-magic_login_send_btn button,
+            .st-key-magic_login_send_btn [data-testid^="baseButton"],
+            .st-key-magic_login_send_action .stButton > button,
+            .st-key-magic_login_send_action button,
+            .st-key-magic_login_send_action [data-testid^="baseButton"] {
+                min-height: 2.2rem !important;
+                font-size: 0.86rem !important;
+            }
+            .st-key-magic_login_verify_btn .stButton > button,
+            .st-key-magic_login_verify_btn button,
+            .st-key-magic_login_verify_btn [data-testid^="baseButton"],
+            .st-key-magic_login_resend_btn .stButton > button,
+            .st-key-magic_login_resend_btn button,
+            .st-key-magic_login_resend_btn [data-testid^="baseButton"],
+            .st-key-magic_login_cancel_btn .stButton > button,
+            .st-key-magic_login_cancel_btn button,
+            .st-key-magic_login_cancel_btn [data-testid^="baseButton"] {
+                min-height: 1.46rem !important;
+                min-width: 3.6rem !important;
+                width: 100% !important;
+                padding: 0.04rem 0.38rem !important;
+                font-size: 0.64rem !important;
             }
             .st-key-login_forgot_reset_btn .stButton {
                 justify-content: flex-end !important;
