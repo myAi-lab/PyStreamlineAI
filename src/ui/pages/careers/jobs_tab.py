@@ -124,6 +124,62 @@ JOB_FETCH_LOADING_LABEL = "Hold on - ZoSwi Match Engine is finding live jobs and
 JOB_FETCH_LOADING_HINT = "We are validating live apply links and ranking the best-fit roles for you."
 JOB_FETCH_LOADING_FINAL_HINT = "We are finishing this search now. A few more seconds..."
 JOB_FETCH_LOADING_FINAL_SECONDS = 15.0
+CAREERS_ADVISOR_SCOPE_MESSAGE = (
+    "Share a role or company and I will find jobs. You can add location and 'last 24h' for recent posts."
+)
+CAREERS_ADVISOR_PRIVACY_GUARD_MESSAGE = (
+    "I cannot provide code or handle personal or secret information. Ask only for job search support."
+)
+CAREERS_ADVISOR_NO_RESULTS_MESSAGE = (
+    "I could not find matching jobs yet. Try role or company, add location, or ask for jobs posted in the last 24h."
+)
+CAREERS_ADVISOR_ACK_MESSAGE = (
+    "Ready. Tell me a role or company, plus location if needed, and I will fetch recent jobs."
+)
+CAREERS_ADVISOR_GREETING_MESSAGE = (
+    "Hi. I can help with job search. Share a role or company, and add location or 'last 24h' if you want recent posts."
+)
+CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT = 8
+CAREERS_ADVISOR_MAX_RESULT_LIMIT = 12
+CAREERS_ADVISOR_RESULT_FETCH_MULTIPLIER = 10
+CAREERS_ADVISOR_MIN_CACHE_HITS = 4
+CAREERS_ADVISOR_DEFAULT_RECENT_DAYS = 1
+CAREERS_ADVISOR_COMPANY_ALIASES: dict[str, str] = {
+    "sales force": "salesforce",
+    "salesforce": "salesforce",
+    "sap": "sap",
+    "jpmc": "jpmorgan chase",
+    "jp morgan": "jpmorgan chase",
+    "jpmorgan": "jpmorgan chase",
+    "bank of america": "bank of america",
+    "weill cornell": "weill cornell",
+    "l3harris": "l3harris",
+    "boeing": "boeing",
+    "at&t": "at&t",
+    "att": "at&t",
+    "comcast": "comcast",
+    "dell": "dell",
+    "bayer": "bayer",
+    "boston scientific": "boston scientific",
+    "citi": "citi",
+    "capital one": "capital one",
+    "pwc": "pwc",
+    "ey": "ey",
+    "deloitte": "deloitte",
+    "kpmg": "kpmg",
+    "airbnb": "airbnb",
+    "anthropic": "anthropic",
+    "coinbase": "coinbase",
+    "cloudflare": "cloudflare",
+    "datadog": "datadog",
+    "dropbox": "dropbox",
+    "figma": "figma",
+    "mongodb": "mongodb",
+    "okta": "okta",
+    "stripe": "stripe",
+    "duolingo": "duolingo",
+    "reddit": "reddit",
+}
 
 
 def render_jobs_tab(
@@ -161,6 +217,13 @@ def render_jobs_tab(
     st.caption("Filter jobs, save roles, and track AI fit in one place.")
     if resume_role_suggestions:
         _render_resume_role_suggestion_row(resume_role_suggestions)
+    _render_careers_advisor_panel(
+        user_id=user_id,
+        jobs_service=jobs_service,
+        fetch_jobs_func=fetch_jobs_func,
+        profile=profile,
+        target_job_description=target_jd,
+    )
 
     with st.form("careers_jobs_filter_form", clear_on_submit=False):
         query_col, location_col = st.columns([2.4, 1.6], gap="small")
@@ -572,6 +635,1053 @@ def render_jobs_tab(
         _render_job_card(item, index, user_id, applications_service)
 
 
+def _request_careers_advisor_submit() -> None:
+    st.session_state["careers_advisor_submit"] = True
+
+
+def _default_careers_advisor_messages() -> list[dict[str, Any]]:
+    return [
+        {
+            "role": "assistant",
+            "content": (
+                "I am ZoSwi Career Advisor. Tell me role, location, and posted window "
+                "(example: show Java backend jobs posted in 24h)."
+            ),
+            "results": [],
+            "role_query": "",
+            "location_query": "",
+            "posted_within_days": 0,
+        }
+    ]
+
+
+def _format_careers_advisor_message_html(role: str, content: str) -> str:
+    safe_content = _escape(str(content or "").strip()).replace("\n", "<br>")
+    normalized_role = str(role or "").strip().lower()
+    if normalized_role == "assistant":
+        return (
+            '<div class="careers-advisor-msg assistant">'
+            '<div class="careers-advisor-msg-head"><span>ZoSwi</span></div>'
+            f'<div class="careers-advisor-msg-text">{safe_content}</div>'
+            "</div>"
+        )
+    return (
+        '<div class="careers-advisor-msg user">'
+        '<div class="careers-advisor-msg-head"><span>You</span></div>'
+        f'<div class="careers-advisor-msg-text">{safe_content}</div>'
+        "</div>"
+    )
+
+
+def _render_careers_advisor_panel(
+    *,
+    user_id: int,
+    jobs_service: CareersJobsService,
+    fetch_jobs_func: Callable[[str, str, int], tuple[list[dict[str, Any]], str]] | None,
+    profile: dict[str, Any],
+    target_job_description: str,
+) -> None:
+    raw_messages = st.session_state.get("careers_advisor_messages")
+    if not isinstance(raw_messages, list) or not raw_messages:
+        st.session_state["careers_advisor_messages"] = _default_careers_advisor_messages()
+        raw_messages = st.session_state.get("careers_advisor_messages", [])
+    messages: list[dict[str, Any]] = [dict(item) for item in raw_messages if isinstance(item, dict)]
+    if not messages:
+        messages = _default_careers_advisor_messages()
+        st.session_state["careers_advisor_messages"] = list(messages)
+
+    if bool(st.session_state.get("careers_advisor_clear_input", False)):
+        st.session_state["careers_advisor_input"] = ""
+        st.session_state["careers_advisor_clear_input"] = False
+
+    with st.container(key="careers_advisor_widget"):
+        advisor_open = bool(st.session_state.get("careers_advisor_open", False))
+        if advisor_open:
+            with st.container(key="careers_advisor_panel"):
+                top_cols = st.columns([7.4, 1.0, 1.0, 1.0], gap="small")
+                with top_cols[0]:
+                    st.markdown("**ZoSwi Career Advisor**")
+                with top_cols[1]:
+                    if st.button("\u2212", key="careers_advisor_minimize", help="Minimize"):
+                        st.session_state["careers_advisor_open"] = False
+                        st.rerun()
+                with top_cols[2]:
+                    if st.button("\u21ba", key="careers_advisor_reset", help="Reset"):
+                        st.session_state["careers_advisor_messages"] = _default_careers_advisor_messages()
+                        st.session_state["careers_advisor_pending_prompt"] = ""
+                        st.session_state["careers_advisor_submit"] = False
+                        st.session_state["careers_advisor_clear_input"] = True
+                        st.rerun()
+                with top_cols[3]:
+                    if st.button("\u00d7", key="careers_advisor_close", help="Close"):
+                        st.session_state["careers_advisor_open"] = False
+                        st.session_state["careers_advisor_pending_prompt"] = ""
+                        st.session_state["careers_advisor_submit"] = False
+                        st.rerun()
+
+                with st.container(height=340):
+                    for msg in messages:
+                        role_value = str(msg.get("role", "assistant")).strip().lower()
+                        content_value = str(msg.get("content", "")).strip()
+                        if content_value:
+                            st.markdown(
+                                _format_careers_advisor_message_html(role_value, content_value),
+                                unsafe_allow_html=True,
+                            )
+                        if role_value == "assistant":
+                            _render_careers_advisor_result_cards(msg)
+
+                pending_prompt = str(st.session_state.get("careers_advisor_pending_prompt", "") or "").strip()
+                is_waiting_for_reply = bool(pending_prompt)
+                input_cols = st.columns([6, 1], gap="small")
+                with input_cols[0]:
+                    message = st.text_input(
+                        "Ask ZoSwi Career Advisor",
+                        key="careers_advisor_input",
+                        placeholder="Ask me anything..",
+                        on_change=_request_careers_advisor_submit,
+                        label_visibility="collapsed",
+                        disabled=is_waiting_for_reply,
+                    )
+                with input_cols[1]:
+                    send = st.button(
+                        "\u2191",
+                        key="careers_advisor_send",
+                        help="Send",
+                        use_container_width=True,
+                        disabled=is_waiting_for_reply,
+                    )
+
+                submit_requested = send or bool(st.session_state.get("careers_advisor_submit", False))
+                if submit_requested:
+                    st.session_state["careers_advisor_submit"] = False
+
+                if submit_requested and not is_waiting_for_reply and str(message or "").strip():
+                    clean_message = str(message or "").strip()
+                    messages.append({"role": "user", "content": clean_message})
+                    st.session_state["careers_advisor_messages"] = messages
+                    st.session_state["careers_advisor_pending_prompt"] = clean_message
+                    st.session_state["careers_advisor_clear_input"] = True
+                    st.rerun()
+
+                if pending_prompt:
+                    with st.spinner("Finding jobs..."):
+                        response_payload = _run_careers_advisor_request(
+                            user_id=user_id,
+                            request_text=pending_prompt,
+                            jobs_service=jobs_service,
+                            fetch_jobs_func=fetch_jobs_func,
+                            profile=profile,
+                            target_job_description=target_job_description,
+                        )
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": _build_careers_advisor_success_message(response_payload),
+                            "results": response_payload.get("results", []),
+                            "role_query": response_payload.get("role_query", ""),
+                            "location_query": response_payload.get("location_query", ""),
+                            "posted_within_days": int(response_payload.get("posted_within_days", 0) or 0),
+                        }
+                    )
+                    st.session_state["careers_advisor_messages"] = messages
+                    st.session_state["careers_advisor_pending_prompt"] = ""
+                    st.rerun()
+
+        fab_icon = "\U0001F4BC" if not advisor_open else "\U0001F5C2\uFE0F"
+        fab_help = "Open ZoSwi Career Advisor" if not advisor_open else "Close ZoSwi Career Advisor"
+        if st.button(fab_icon, key="careers_advisor_fab", help=fab_help):
+            st.session_state["careers_advisor_open"] = not advisor_open
+            st.rerun()
+
+
+def _run_careers_advisor_request(
+    *,
+    user_id: int,
+    request_text: str,
+    jobs_service: CareersJobsService,
+    fetch_jobs_func: Callable[[str, str, int], tuple[list[dict[str, Any]], str]] | None,
+    profile: dict[str, Any],
+    target_job_description: str,
+) -> dict[str, Any]:
+    clean_request = re.sub(r"\s+", " ", str(request_text or "").strip())
+    if not clean_request:
+        return {
+            "message": "Enter a job request first.",
+            "results": [],
+            "role_query": "",
+            "location_query": "",
+            "posted_within_days": 0,
+        }
+
+    lowered_request = clean_request.lower()
+    if _contains_disallowed_careers_request(lowered_request):
+        return {
+            "message": CAREERS_ADVISOR_PRIVACY_GUARD_MESSAGE,
+            "results": [],
+            "role_query": "",
+            "location_query": "",
+            "posted_within_days": 0,
+        }
+    normalized_request = _normalize_careers_advisor_request(lowered_request)
+    if not _looks_like_career_request(normalized_request):
+        if _is_careers_greeting_request(normalized_request):
+            return {
+                "message": CAREERS_ADVISOR_GREETING_MESSAGE,
+                "results": [],
+                "role_query": "",
+                "location_query": "",
+                "posted_within_days": 0,
+            }
+        if _is_careers_acknowledgement_request(normalized_request):
+            return {
+                "message": CAREERS_ADVISOR_ACK_MESSAGE,
+                "results": [],
+                "role_query": "",
+                "location_query": "",
+                "posted_within_days": 0,
+            }
+        return {
+            "message": CAREERS_ADVISOR_SCOPE_MESSAGE,
+            "results": [],
+            "role_query": "",
+            "location_query": "",
+            "posted_within_days": 0,
+        }
+
+    fallback_role = str(st.session_state.get("careers_jobs_role_query", "") or "").strip()
+    if not fallback_role:
+        fallback_role = str(st.session_state.get("careers_jobs_resume_default_role", "") or "").strip()
+    fallback_location_label = str(
+        st.session_state.get("careers_jobs_location_query", IT_STRONG_LOCATION_OPTIONS[0]) or IT_STRONG_LOCATION_OPTIONS[0]
+    )
+    fallback_location = _location_query_value(fallback_location_label)
+
+    requested_posted_days = _extract_posted_window_days(normalized_request)
+    if requested_posted_days <= 0:
+        requested_posted_days = CAREERS_ADVISOR_DEFAULT_RECENT_DAYS
+    requested_limit = _extract_requested_result_limit(lowered_request)
+    requested_location = _extract_requested_location(normalized_request, fallback_location)
+    requested_role = _extract_requested_role(normalized_request, requested_location, fallback_role)
+    if not requested_role:
+        return {
+            "message": "Add a target role in your request, for example: Java backend jobs.",
+            "results": [],
+            "role_query": "",
+            "location_query": requested_location,
+            "posted_within_days": requested_posted_days,
+        }
+    requested_role = _normalize_careers_advisor_request(requested_role)
+
+    recent_windows = _build_advisor_recent_windows(requested_posted_days)
+    cached_raw = st.session_state.get("careers_jobs_last_raw", [])
+    quick_cards: list[EnrichedJobCard] = []
+    used_posted_within_days = int(requested_posted_days)
+    for window_days in recent_windows:
+        filters = JobFilters(
+            query=requested_role,
+            location=requested_location,
+            posted_within_days=int(window_days),
+            role_match_mode="balanced",
+            limit=max(10, int(requested_limit * 2)),
+            offset=0,
+        )
+        candidate_cards = _build_quick_advisor_cards_from_raw(
+            raw_jobs=cached_raw if isinstance(cached_raw, list) else [],
+            jobs_service=jobs_service,
+            filters=filters,
+            user_profile=profile,
+            target_job_description=str(target_job_description or ""),
+            limit=requested_limit,
+        )
+        if candidate_cards:
+            quick_cards = list(candidate_cards)
+            used_posted_within_days = int(window_days)
+        if len(candidate_cards) >= min(CAREERS_ADVISOR_MIN_CACHE_HITS, requested_limit):
+            break
+    fetch_note = ""
+    normalized_cards = list(quick_cards)
+
+    if len(normalized_cards) < min(CAREERS_ADVISOR_MIN_CACHE_HITS, requested_limit):
+        fetch_limit = max(12, min(48, int(requested_limit * 2)))
+        raw_jobs, fetch_note = _fetch_raw_jobs(
+            fetch_jobs_func=fetch_jobs_func,
+            role_query=requested_role,
+            preferred_location=requested_location,
+            max_results=fetch_limit,
+            fast_mode=True,
+        )
+        if not isinstance(raw_jobs, list):
+            raw_jobs = []
+        if raw_jobs:
+            st.session_state["careers_jobs_last_raw"] = raw_jobs
+        normalized_cards = []
+        for window_days in recent_windows:
+            filters = JobFilters(
+                query=requested_role,
+                location=requested_location,
+                posted_within_days=int(window_days),
+                role_match_mode="balanced",
+                limit=max(10, int(requested_limit * 2)),
+                offset=0,
+            )
+            candidate_cards = _build_quick_advisor_cards_from_raw(
+                raw_jobs=raw_jobs,
+                jobs_service=jobs_service,
+                filters=filters,
+                user_profile=profile,
+                target_job_description=str(target_job_description or ""),
+                limit=requested_limit,
+            )
+            if candidate_cards:
+                normalized_cards = list(candidate_cards)
+                used_posted_within_days = int(window_days)
+            if len(candidate_cards) >= min(CAREERS_ADVISOR_MIN_CACHE_HITS, requested_limit):
+                break
+        if not normalized_cards and quick_cards:
+            normalized_cards = list(quick_cards)
+
+    if not normalized_cards and _is_company_only_query(requested_role):
+        company_term = _extract_primary_company_term(requested_role) or _normalize_careers_advisor_request(requested_role)
+        company_rows: list[dict[str, Any]] = []
+        for company_query in _build_company_boost_queries(company_term):
+            raw_jobs, fetch_note = _fetch_raw_jobs(
+                fetch_jobs_func=fetch_jobs_func,
+                role_query=company_query,
+                preferred_location=requested_location,
+                max_results=max(12, min(48, int(requested_limit * 2))),
+                fast_mode=False,
+            )
+            if not isinstance(raw_jobs, list):
+                raw_jobs = []
+            if raw_jobs:
+                company_rows.extend(raw_jobs)
+                company_rows = _dedupe_jobs(company_rows)
+            if len(company_rows) >= max(12, int(requested_limit * 2)):
+                break
+        company_rows = _filter_rows_for_company_terms(company_rows, company_term)
+        if company_rows:
+            st.session_state["careers_jobs_last_raw"] = company_rows
+            for window_days in recent_windows:
+                company_filters = JobFilters(
+                    query=company_term,
+                    location=requested_location,
+                    posted_within_days=int(window_days),
+                    role_match_mode="broad",
+                    limit=max(10, int(requested_limit * 2)),
+                    offset=0,
+                )
+                candidate_cards = _build_quick_advisor_cards_from_raw(
+                    raw_jobs=company_rows,
+                    jobs_service=jobs_service,
+                    filters=company_filters,
+                    user_profile=profile,
+                    target_job_description=str(target_job_description or ""),
+                    limit=requested_limit,
+                )
+                if candidate_cards:
+                    normalized_cards = list(candidate_cards)
+                    used_posted_within_days = int(window_days)
+                if len(candidate_cards) >= min(CAREERS_ADVISOR_MIN_CACHE_HITS, requested_limit):
+                    break
+
+    if normalized_cards:
+        if used_posted_within_days > int(requested_posted_days):
+            message = (
+                f"Expanded recent window from {_advisor_recent_days_label(requested_posted_days)} "
+                f"to {_advisor_recent_days_label(used_posted_within_days)} to return more jobs."
+            )
+        else:
+            message = ""
+    else:
+        fetch_note_clean = str(fetch_note or "").strip().lower()
+        if fetch_note_clean.startswith("job fetch failed"):
+            message = "Could not fetch jobs right now. Try again."
+        else:
+            message = CAREERS_ADVISOR_NO_RESULTS_MESSAGE
+    return {
+        "message": message,
+        "results": [item.to_dict() for item in normalized_cards if isinstance(item, EnrichedJobCard)],
+        "role_query": requested_role,
+        "location_query": requested_location,
+        "posted_within_days": int(used_posted_within_days),
+    }
+
+
+def _render_careers_advisor_result_cards(raw_payload: dict[str, Any]) -> None:
+    results = _coerce_enriched_cards(raw_payload.get("results", []) if isinstance(raw_payload, dict) else [])
+    if not results:
+        return
+    for idx, card in enumerate(results, start=1):
+        if not isinstance(card, EnrichedJobCard):
+            continue
+        title = _escape(str(card.job.title or "").strip() or "Untitled role")
+        company = _escape(str(card.job.company or "").strip() or "Unknown company")
+        location = _escape(_normalize_job_location_for_display(str(card.job.location or "").strip()))
+        posted = _escape(_advisor_posted_label(str(card.job.posted_at or "").strip()))
+        source = _escape(str(card.job.source or "").strip() or "External source")
+        score = int(card.match.match_score or 0)
+        job_url = str(card.job.job_url or "").strip()
+        link_html = ""
+        if job_url:
+            safe_link = _escape_link(job_url)
+            link_html = (
+                f'<a class="careers-advisor-link" href="{safe_link}" target="_blank" rel="noopener noreferrer">'
+                "Open Job</a>"
+            )
+        st.markdown(
+            f"""
+            <div class="careers-advisor-result-card">
+                <div class="careers-advisor-result-head">
+                    <div class="careers-advisor-result-title">{idx}. {title}</div>
+                    <div class="careers-advisor-result-score">ZoSwi Match {score}%</div>
+                </div>
+                <div class="careers-advisor-result-meta">{company} | {location} | {posted}</div>
+                <div class="careers-advisor-result-source">{source}</div>
+                {link_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def _build_careers_advisor_success_message(raw_payload: dict[str, Any]) -> str:
+    if not isinstance(raw_payload, dict):
+        return CAREERS_ADVISOR_NO_RESULTS_MESSAGE
+    explicit_message = str(raw_payload.get("message", "") or "").strip()
+    if explicit_message:
+        return explicit_message
+    results = _coerce_enriched_cards(raw_payload.get("results", []))
+    result_count = len(results)
+    if result_count <= 0:
+        return CAREERS_ADVISOR_NO_RESULTS_MESSAGE
+    role_query = str(raw_payload.get("role_query", "") or "").strip()
+    posted_within_days = int(raw_payload.get("posted_within_days", 0) or 0)
+    base = f"Found {result_count} jobs"
+    if role_query:
+        base += f" for {role_query}"
+    if posted_within_days == 1:
+        base += " posted in the last 24h"
+    elif posted_within_days > 1:
+        base += f" posted in the last {posted_within_days} days"
+    return f"{base}."
+
+
+def _build_quick_advisor_cards_from_raw(
+    *,
+    raw_jobs: list[dict[str, Any]],
+    jobs_service: CareersJobsService,
+    filters: JobFilters,
+    user_profile: dict[str, Any],
+    target_job_description: str,
+    limit: int,
+) -> list[EnrichedJobCard]:
+    if not isinstance(raw_jobs, list) or not raw_jobs:
+        return []
+    try:
+        normalized_jobs = jobs_service.normalize_jobs(raw_jobs)
+        filtered_jobs = jobs_service.filter_jobs(normalized_jobs, filters)
+    except Exception:
+        return []
+    if not filtered_jobs:
+        return []
+
+    max_candidates = max(10, min(80, int(limit or CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT) * 3))
+    candidate_cards: list[EnrichedJobCard] = []
+    for job in filtered_jobs[:max_candidates]:
+        try:
+            score = int(
+                jobs_service.compute_ai_match_score_placeholder(
+                    job=job,
+                    user_profile=user_profile,
+                    target_job_description=target_job_description,
+                )
+                or 0
+            )
+        except Exception:
+            score = 0
+        if score >= 74:
+            recommendation = "APPLY"
+        elif score >= 46:
+            recommendation = "IMPROVE_FIRST"
+        else:
+            recommendation = "SKIP"
+        candidate_cards.append(
+            EnrichedJobCard(
+                job=job,
+                match=JobMatchResult(
+                    job_id=str(job.job_id or "").strip(),
+                    match_score=max(0, min(100, int(score))),
+                    why_fit="",
+                    ai_summary="",
+                    why_fit_points=tuple(),
+                    missing_skills=tuple(),
+                    recommendation=recommendation,
+                    improvement_suggestions=tuple(),
+                    computed_at="",
+                    analysis_timestamp="",
+                    analysis_source="quick",
+                ),
+            )
+        )
+    if not candidate_cards:
+        return []
+    candidate_cards = sorted(
+        candidate_cards,
+        key=lambda item: (int(item.match.match_score or 0), _advisor_posted_sort_value(item.job.posted_at)),
+        reverse=True,
+    )
+    candidate_cards = _diversify_cards_by_source(candidate_cards)
+    return candidate_cards[: max(1, int(limit or CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT))]
+
+
+def _advisor_posted_sort_value(posted_at: str) -> float:
+    parsed = CareersJobsService._parse_posted_at(str(posted_at or "").strip())
+    if parsed is None:
+        return 0.0
+    return float(parsed.timestamp())
+
+
+def _looks_like_career_request(lowered_request: str) -> bool:
+    clean = str(lowered_request or "").strip().lower()
+    if not clean:
+        return False
+    career_terms = {
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "career",
+        "careers",
+        "opening",
+        "openings",
+        "position",
+        "positions",
+        "hiring",
+        "apply",
+        "posted",
+        "recent",
+    }
+    role_terms = {
+        "engineer",
+        "developer",
+        "scientist",
+        "analyst",
+        "manager",
+        "architect",
+        "devops",
+        "frontend",
+        "backend",
+        "full stack",
+        "data",
+        "cloud",
+        "security",
+        "qa",
+        "intern",
+        "java",
+        "python",
+        "react",
+    }
+    if any(token in clean for token in career_terms):
+        return True
+    if any(token in clean for token in role_terms):
+        return True
+    if _contains_known_company_term(clean):
+        return True
+    tokens = [token for token in re.findall(r"[a-z0-9+#/.]+", clean) if token]
+    if not tokens:
+        return False
+    conversational_tokens = {
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank",
+        "ok",
+        "okay",
+        "yo",
+        "help",
+        "what",
+        "why",
+        "how",
+        "who",
+        "when",
+        "where",
+    }
+    meaningful = [token for token in tokens if token not in conversational_tokens]
+    if not meaningful:
+        return False
+    return len(meaningful) <= 3 and any(len(token) >= 3 for token in meaningful)
+
+
+def _is_careers_acknowledgement_request(text: str) -> bool:
+    clean = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not clean:
+        return False
+    return clean in {
+        "k",
+        "kk",
+        "ok",
+        "okay",
+        "alright",
+        "all right",
+        "got it",
+        "cool",
+        "thanks",
+        "thank you",
+        "thx",
+    }
+
+
+def _is_careers_greeting_request(text: str) -> bool:
+    clean = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not clean:
+        return False
+    return clean in {
+        "hi",
+        "hello",
+        "hey",
+        "hiya",
+        "good morning",
+        "good afternoon",
+        "good evening",
+    }
+
+
+def _contains_disallowed_careers_request(lowered_request: str) -> bool:
+    clean = str(lowered_request or "").strip().lower()
+    if not clean:
+        return False
+    code_pattern = re.compile(
+        r"\b(write|generate|create|build|debug|fix|show)\b.{0,30}\b(code|script|program|function|algorithm|regex|sql query)\b",
+        flags=re.IGNORECASE,
+    )
+    if code_pattern.search(clean):
+        return True
+    personal_markers = (
+        "password",
+        "otp",
+        "one time code",
+        "social security",
+        "ssn",
+        "credit card",
+        "cvv",
+        "bank account",
+        "api key",
+        "secret key",
+        "private key",
+        "date of birth",
+        "dob",
+    )
+    return any(marker in clean for marker in personal_markers)
+
+
+def _extract_requested_result_limit(lowered_request: str) -> int:
+    clean = str(lowered_request or "").strip().lower()
+    if not clean:
+        return CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT
+    explicit_match = re.search(
+        r"\b(?:top|show|find|get|list)\s+(\d{1,2})\s*(?:jobs?|roles?|results?)\b",
+        clean,
+    )
+    if explicit_match:
+        try:
+            requested = int(explicit_match.group(1))
+        except Exception:
+            requested = CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT
+        return max(1, min(CAREERS_ADVISOR_MAX_RESULT_LIMIT, requested))
+    return CAREERS_ADVISOR_DEFAULT_RESULT_LIMIT
+
+
+def _extract_posted_window_days(lowered_request: str) -> int:
+    clean = str(lowered_request or "").strip().lower()
+    if not clean:
+        return 0
+    if re.search(r"\b(24\s*(h|hr|hrs|hour|hours)|past day|last day|today)\b", clean):
+        return 1
+    if "recently posted" in clean or "recent postings" in clean:
+        return 1
+    days_match = re.search(r"\b(?:past|last|within)\s+(\d{1,2})\s*days?\b", clean)
+    if days_match:
+        return _normalize_supported_posted_window_days(int(days_match.group(1) or 0))
+    weeks_match = re.search(r"\b(?:past|last|within)\s+(\d{1,2})\s*weeks?\b", clean)
+    if weeks_match:
+        return _normalize_supported_posted_window_days(int(weeks_match.group(1) or 0) * 7)
+    months_match = re.search(r"\b(?:past|last|within)\s+(\d{1,2})\s*months?\b", clean)
+    if months_match:
+        return _normalize_supported_posted_window_days(int(months_match.group(1) or 0) * 30)
+    return 0
+
+
+def _normalize_supported_posted_window_days(days: int) -> int:
+    safe_days = max(0, int(days or 0))
+    if safe_days <= 0:
+        return 0
+    if safe_days <= 1:
+        return 1
+    if safe_days <= 3:
+        return 3
+    if safe_days <= 7:
+        return 7
+    if safe_days <= 14:
+        return 14
+    return 30
+
+
+def _build_advisor_recent_windows(base_days: int) -> list[int]:
+    normalized_days = _normalize_supported_posted_window_days(int(base_days or 0))
+    if normalized_days <= 0:
+        normalized_days = CAREERS_ADVISOR_DEFAULT_RECENT_DAYS
+    fallback_map: dict[int, list[int]] = {
+        1: [1, 3, 7],
+        3: [3, 7, 14],
+        7: [7, 14, 30],
+        14: [14, 30],
+        30: [30],
+    }
+    values = fallback_map.get(normalized_days, [normalized_days])
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for item in values:
+        safe = _normalize_supported_posted_window_days(int(item or 0))
+        if safe <= 0 or safe in seen:
+            continue
+        seen.add(safe)
+        deduped.append(safe)
+    return deduped or [CAREERS_ADVISOR_DEFAULT_RECENT_DAYS]
+
+
+def _advisor_recent_days_label(days: int) -> str:
+    safe_days = _normalize_supported_posted_window_days(int(days or 0))
+    if safe_days <= 1:
+        return "24h"
+    return f"{safe_days}d"
+
+
+def _extract_requested_location(lowered_request: str, fallback_location: str) -> str:
+    clean = re.sub(r"\s+", " ", str(lowered_request or "").strip().lower())
+    if not clean:
+        return str(fallback_location or "").strip()
+    if re.search(r"\bremote\b", clean):
+        return "remote"
+
+    for label, query_value in IT_LOCATION_QUERY_MAP.items():
+        label_lower = str(label or "").strip().lower()
+        if label_lower and re.search(rf"\b{re.escape(label_lower)}\b", clean):
+            return str(query_value or "").strip()
+
+    location_aliases: dict[str, str] = {
+        "usa": "united states of america",
+        "us": "united states of america",
+        "u.s.": "united states of america",
+        "united states": "united states of america",
+        "uk": "united kingdom",
+        "u.k.": "united kingdom",
+        "uae": "united arab emirates",
+    }
+    for alias, normalized in location_aliases.items():
+        if re.search(rf"\b{re.escape(alias)}\b", clean):
+            return normalized
+
+    in_match = re.search(r"\bin\s+([a-z][a-z\s,&./-]{1,40})", clean)
+    if in_match:
+        candidate = str(in_match.group(1) or "").strip()
+        candidate = re.split(
+            r"\b(job|jobs|role|roles|position|positions|posted|within|past|last|top|show|find|get)\b",
+            candidate,
+            maxsplit=1,
+        )[0]
+        candidate = re.sub(r"[^a-z\s,&./-]", " ", candidate)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" ,.-")
+        if candidate:
+            return candidate
+    return str(fallback_location or "").strip()
+
+
+def _extract_requested_role(lowered_request: str, requested_location: str, fallback_role: str) -> str:
+    clean = str(lowered_request or "").strip().lower()
+    if not clean:
+        return str(fallback_role or "").strip()
+    tokens = re.findall(r"[a-z0-9+#/.]+", clean)
+    stop_tokens = {
+        "show",
+        "find",
+        "get",
+        "list",
+        "search",
+        "looking",
+        "look",
+        "for",
+        "me",
+        "my",
+        "please",
+        "can",
+        "you",
+        "need",
+        "want",
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "career",
+        "careers",
+        "opening",
+        "openings",
+        "position",
+        "positions",
+        "posted",
+        "posting",
+        "postings",
+        "recent",
+        "recently",
+        "past",
+        "last",
+        "within",
+        "hour",
+        "hours",
+        "day",
+        "days",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "today",
+        "latest",
+        "new",
+        "newest",
+        "top",
+        "all",
+        "any",
+        "only",
+        "in",
+        "at",
+        "from",
+        "to",
+        "the",
+        "a",
+        "an",
+        "with",
+        "without",
+    }
+    location_tokens = set(re.findall(r"[a-z0-9]+", str(requested_location or "").lower()))
+    role_tokens: list[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        if token in stop_tokens:
+            continue
+        if token in location_tokens:
+            continue
+        if re.fullmatch(r"\d+[a-z]*", token):
+            continue
+        role_tokens.append(token)
+    extracted_role = re.sub(r"\s+", " ", " ".join(role_tokens)).strip()
+    if not extracted_role:
+        return str(fallback_role or "").strip()
+    if extracted_role in {"job", "jobs", "role", "roles"}:
+        return str(fallback_role or "").strip()
+    normalized_role = _normalize_careers_advisor_request(extracted_role)
+    primary_company = _extract_primary_company_term(normalized_role)
+    if primary_company:
+        return primary_company
+    return normalized_role
+
+
+def _normalize_careers_advisor_request(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not normalized:
+        return ""
+    aliases = sorted(
+        CAREERS_ADVISOR_COMPANY_ALIASES.items(),
+        key=lambda item: len(str(item[0] or "")),
+        reverse=True,
+    )
+    for alias, canonical in aliases:
+        alias_clean = str(alias or "").strip().lower()
+        canonical_clean = str(canonical or "").strip().lower()
+        if not alias_clean or not canonical_clean:
+            continue
+        pattern = rf"(?<![a-z0-9]){re.escape(alias_clean)}(?![a-z0-9])"
+        source_text = normalized
+
+        def _replace_alias(match: re.Match[str]) -> str:
+            start = int(match.start())
+            if source_text[start : start + len(canonical_clean)] == canonical_clean:
+                return str(match.group(0) or "")
+            return canonical_clean
+
+        normalized = re.sub(pattern, _replace_alias, source_text)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _contains_known_company_term(text: str) -> bool:
+    clean = str(text or "").strip().lower()
+    if not clean:
+        return False
+    candidate_terms = {
+        str(term or "").strip().lower()
+        for term in (
+            list(CAREERS_ADVISOR_COMPANY_ALIASES.keys()) + list(CAREERS_ADVISOR_COMPANY_ALIASES.values())
+        )
+    }
+    for term in sorted(candidate_terms, key=len, reverse=True):
+        if not term:
+            continue
+        pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+        if re.search(pattern, clean):
+            return True
+    return False
+
+
+def _extract_primary_company_term(text: str) -> str:
+    clean = _normalize_careers_advisor_request(text)
+    if not clean:
+        return ""
+    best_term = ""
+    best_start = -1
+    for alias, canonical in CAREERS_ADVISOR_COMPANY_ALIASES.items():
+        alias_clean = str(alias or "").strip().lower()
+        canonical_clean = str(canonical or "").strip().lower()
+        if not alias_clean or not canonical_clean:
+            continue
+        for needle in (canonical_clean, alias_clean):
+            pattern = rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])"
+            match = re.search(pattern, clean)
+            if match is None:
+                continue
+            start = int(match.start())
+            if best_start < 0 or start < best_start:
+                best_start = start
+                best_term = canonical_clean
+            elif start == best_start and len(canonical_clean) > len(best_term):
+                best_term = canonical_clean
+    return best_term
+
+
+def _build_company_boost_queries(company_term: str) -> list[str]:
+    primary = _extract_primary_company_term(company_term) or _normalize_careers_advisor_request(company_term)
+    if not primary:
+        return []
+    candidates = [
+        primary,
+        f"{primary} jobs",
+        f"{primary} careers",
+        f"software engineer {primary}",
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        clean_candidate = re.sub(r"\s+", " ", str(candidate or "").strip())
+        key = clean_candidate.lower()
+        if not clean_candidate or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(clean_candidate)
+    return deduped
+
+
+def _company_search_terms(company_term: str) -> list[str]:
+    normalized = _normalize_careers_advisor_request(company_term)
+    if not normalized:
+        return []
+    canonical_hits: set[str] = set()
+    for alias, canonical in CAREERS_ADVISOR_COMPANY_ALIASES.items():
+        alias_clean = str(alias or "").strip().lower()
+        canonical_clean = str(canonical or "").strip().lower()
+        if not alias_clean or not canonical_clean:
+            continue
+        alias_pattern = rf"(?<![a-z0-9]){re.escape(alias_clean)}(?![a-z0-9])"
+        canonical_pattern = rf"(?<![a-z0-9]){re.escape(canonical_clean)}(?![a-z0-9])"
+        if re.search(alias_pattern, normalized) or re.search(canonical_pattern, normalized):
+            canonical_hits.add(canonical_clean)
+    if not canonical_hits:
+        primary = _extract_primary_company_term(normalized)
+        if primary:
+            canonical_hits.add(primary)
+    terms: set[str] = set()
+    for canonical in canonical_hits:
+        terms.add(canonical)
+        for alias, mapped in CAREERS_ADVISOR_COMPANY_ALIASES.items():
+            mapped_clean = str(mapped or "").strip().lower()
+            alias_clean = str(alias or "").strip().lower()
+            if mapped_clean == canonical and alias_clean:
+                terms.add(alias_clean)
+    if not terms and normalized:
+        terms.add(normalized)
+    return sorted((term for term in terms if term), key=len, reverse=True)
+
+
+def _filter_rows_for_company_terms(rows: list[dict[str, Any]], company_term: str) -> list[dict[str, Any]]:
+    if not isinstance(rows, list) or not rows:
+        return []
+    terms = _company_search_terms(company_term)
+    if not terms:
+        return list(rows)
+    filtered: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        blob = _normalize_careers_advisor_request(
+            " ".join(
+                [
+                    str(item.get("title", "") or ""),
+                    str(item.get("company", "") or ""),
+                    str(item.get("source", "") or ""),
+                    str(item.get("job_url", item.get("apply_url", "")) or ""),
+                ]
+            )
+        )
+        if not blob:
+            continue
+        if any(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", blob) for term in terms):
+            filtered.append(dict(item))
+    return filtered
+
+
+def _is_company_only_query(role_query: str) -> bool:
+    clean = _normalize_careers_advisor_request(role_query)
+    if not clean:
+        return False
+    role_markers = {
+        "engineer",
+        "developer",
+        "scientist",
+        "analyst",
+        "manager",
+        "architect",
+        "intern",
+        "devops",
+        "frontend",
+        "backend",
+        "full stack",
+        "qa",
+        "cloud",
+        "security",
+    }
+    if any(marker in clean for marker in role_markers):
+        return False
+    return bool(_extract_primary_company_term(clean))
+
+
+def _advisor_posted_label(posted_at: str) -> str:
+    posted_text = str(posted_at or "").strip()
+    if not posted_text:
+        return "Posted date unavailable"
+    parsed_posted_at = CareersJobsService._parse_posted_at(posted_text)
+    if parsed_posted_at is None:
+        return posted_text
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - parsed_posted_at).total_seconds())
+    age_hours = age_seconds / 3600.0
+    if age_hours <= 1.5:
+        return "Posted within 1h"
+    if age_hours <= 24.5:
+        return f"Posted {int(max(1, round(age_hours)))}h ago"
+    age_days = age_hours / 24.0
+    if age_days <= 30.5:
+        return f"Posted {int(max(1, round(age_days)))}d ago"
+    return parsed_posted_at.strftime("Posted %b %d, %Y")
+
+
 def _render_job_card(
     item: EnrichedJobCard,
     index: int,
@@ -811,6 +1921,7 @@ def _fetch_raw_jobs(
     role_query: str,
     preferred_location: str,
     max_results: int,
+    fast_mode: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, str]:
     cleaned_role = str(role_query or "").strip()
     if not cleaned_role:
@@ -822,6 +1933,9 @@ def _fetch_raw_jobs(
         if not isinstance(rows, list):
             rows = []
         rows = [dict(item) for item in rows if isinstance(item, dict)]
+        if bool(fast_mode):
+            quick_rows = _dedupe_jobs(rows)[: max(1, int(max_results or 25))]
+            return quick_rows, str(note or "").strip()
 
         min_target = max(8, min(25, int(max_results or 25) // 2))
         expanded = False
@@ -1860,6 +2974,12 @@ def _ensure_jobs_state() -> None:
         "careers_jobs_effective_location": "",
         "careers_jobs_effective_query": "",
         "careers_jobs_auto_relaxed": False,
+        "careers_advisor_open": False,
+        "careers_advisor_messages": [],
+        "careers_advisor_input": "",
+        "careers_advisor_submit": False,
+        "careers_advisor_pending_prompt": "",
+        "careers_advisor_clear_input": False,
         "careers_jobs_state_migrated_v2": False,
         "careers_jobs_state_migrated_v3": False,
         "careers_jobs_state_migrated_v4": False,
@@ -1875,6 +2995,9 @@ def _ensure_jobs_state() -> None:
     st.session_state["careers_jobs_location_query"] = _normalize_location_state_value(
         str(st.session_state.get("careers_jobs_location_query", "") or "")
     )
+    advisor_messages = st.session_state.get("careers_advisor_messages")
+    if not isinstance(advisor_messages, list) or not advisor_messages:
+        st.session_state["careers_advisor_messages"] = _default_careers_advisor_messages()
 
     if not bool(st.session_state.get("careers_jobs_state_migrated_v2", False)):
         try:

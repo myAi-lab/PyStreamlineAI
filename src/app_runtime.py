@@ -146,7 +146,7 @@ AI_WORKSPACE_ADULT_BLOCK_MESSAGE = (
     "I can’t help with 18+ or explicit sexual content. "
     "I can help with career, coding, interview prep, and professional tasks."
 )
-ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi Live Workspace"
+ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi AI Pro"
 ZOSWI_INTERVIEW_APP_URL_DEFAULT = "http://127.0.0.1:3000/interview"
 ZOSWI_INSTANT_BUILDER_URL_DEFAULT = "http://127.0.0.1:3000/instant-builder"
 ZOSWI_BLOCKED_APP_NAME_PATTERN = re.compile(
@@ -1764,7 +1764,7 @@ def build_dashboard_module_status_summary() -> str:
     flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     labels = (
         ("Careers", "careers"),
-        ("Live Workspace", "ai_workspace"),
+        (ZOSWI_LIVE_WORKSPACE_NAME, "ai_workspace"),
         ("Immigration Updates", "immigration_updates"),
         ("AI Coding Room", "coding_room"),
         ("Live AI Interview", "live_interview"),
@@ -10441,8 +10441,10 @@ def is_zoswi_capability_request(message: str) -> bool:
         "coding room",
         "ai coding room",
         "ai workspace",
+        "ai pro",
         "live workspace",
         "zoswi live workspace",
+        "zoswi ai pro",
         "careers",
         "career studio",
         "job match studio",
@@ -10542,7 +10544,7 @@ def build_zoswi_capability_response(message: str) -> str:
             "Run Home Resume-JD analysis once, then Start 3-Stage AI Coding Room will unlock."
         )
 
-    if "ai workspace" in text or "live workspace" in text:
+    if "ai workspace" in text or "live workspace" in text or "ai pro" in text:
         if not live_workspace_enabled:
             return f"{ZOSWI_LIVE_WORKSPACE_NAME} is currently disabled."
         return (
@@ -13428,7 +13430,7 @@ def ensure_quick_links_in_message_state(state_key: str) -> None:
             migrated = build_bot_first_message_content(full_name)
         elif state_key == "ai_workspace_messages":
             migrated = (
-                "ZoSwi Live Workspace is ready. "
+                f"{ZOSWI_LIVE_WORKSPACE_NAME} is ready. "
                 "Ask anything to get started.\n\n"
                 f"{links_line}"
             )
@@ -13470,7 +13472,7 @@ def default_ai_workspace_messages(full_name: str | None = None) -> list[dict[str
         {
             "role": "assistant",
             "content": (
-                "ZoSwi Live Workspace is ready. "
+                f"{ZOSWI_LIVE_WORKSPACE_NAME} is ready. "
                 "Ask anything to get started.\n\n"
                 f"{links_line}"
             ),
@@ -14350,7 +14352,7 @@ def build_ai_workspace_prompt(message: str) -> str:
     response_mode = infer_zoswi_response_mode(clean_message, intent)
     response_mode_guidance = build_zoswi_response_mode_guidance(response_mode)
     return f"""
-You are ZoSwi Live Workspace, a high-quality professional assistant.
+You are {ZOSWI_LIVE_WORKSPACE_NAME}, a high-quality professional assistant.
 
 Response rules:
 - Be direct, helpful, and conversational.
@@ -14420,7 +14422,7 @@ def ask_ai_workspace_stream(message: str):
 
     key = get_zoswiai_key()
     if not key:
-        yield "ZOSWI_AI_API_KEY is required for ZoSwi Live Workspace responses. Please set it and retry."
+        yield f"ZOSWI_AI_API_KEY is required for {ZOSWI_LIVE_WORKSPACE_NAME} responses. Please set it and retry."
         return
 
     intent_mode = infer_ai_workspace_intent(message)
@@ -18023,7 +18025,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                             st.session_state.bot_open = False
                             st.rerun()
                     if feature_flags.get("ai_workspace", False):
-                        if st.button("ZoSwi Live Workspace", key="sidebar_nav_ai_workspace", use_container_width=True):
+                        if st.button(ZOSWI_LIVE_WORKSPACE_NAME, key="sidebar_nav_ai_workspace", use_container_width=True):
                             st.session_state.dashboard_view = "ai_workspace"
                             st.session_state.bot_open = False
                             st.rerun()
