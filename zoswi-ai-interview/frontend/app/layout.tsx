@@ -15,7 +15,12 @@ const displayFont = Space_Grotesk({
 
 export const metadata: Metadata = {
   title: "ZoSwi AI Interview",
-  description: "AI-powered technical interview platform for ZoSwi"
+  description: "AI-powered technical interview platform for ZoSwi",
+  icons: {
+    icon: "/zoswi-logo-icon.png",
+    shortcut: "/zoswi-logo-icon.png",
+    apple: "/zoswi-logo-icon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

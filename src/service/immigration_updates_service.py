@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
@@ -282,17 +283,24 @@ class ImmigrationUpdatesService:
 
     def answer_query_from_updates(self, query: str, updates: list[dict[str, Any]]) -> str:
         question = self._compact_text(str(query or ""))
-        rows = [item for item in updates if isinstance(item, dict)][:8]
         if not question:
             return ""
-        h1b_timeline_answer = self._build_h1b_timeline_answer(question)
-        if h1b_timeline_answer:
-            return h1b_timeline_answer
+        rows, has_direct_match = self._select_query_relevant_updates(question, updates, limit=8)
         if not rows:
             return (
                 "I could not find enough related updates to answer this yet. "
                 "Try a specific query like H1B lottery selection notice or visa bulletin EB2."
             )
+        if self.looks_like_question(question) and not has_direct_match:
+            return self._remove_urls_from_text(
+                (
+                f'I could not find a direct live match for "{question}" in the latest source updates. '
+                "Try a more specific keyword like H1B registration, visa bulletin EB2, or STEM OPT."
+                )
+            )
+        h1b_live_answer = self._build_h1b_results_live_answer(question, rows)
+        if h1b_live_answer:
+            return self._remove_urls_from_text(h1b_live_answer)
 
         client = self._get_ai_client()
         if client is not None:
@@ -315,31 +323,255 @@ class ImmigrationUpdatesService:
                         {
                             "role": "system",
                             "content": (
-                                "You answer immigration dashboard questions using only provided updates. "
-                                "Be factual, concise, and non-speculative. If an official date is not present, "
-                                "state that clearly. Do not provide legal advice."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
+                            "You answer immigration dashboard questions using only provided updates. "
+                            "Be factual, concise, and non-speculative. If an official date is not present, "
+                            "state that clearly. Do not provide legal advice. Do not include URLs or links."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
                                 f"Question: {question}\n"
                                 f"Today's date (UTC): {datetime.now(timezone.utc).date().isoformat()}\n"
                                 f"Updates JSON: {json.dumps(context_rows, ensure_ascii=True)}\n"
-                                "Answer in 2-4 sentences. Include exact dates when available and mention source names."
+                                "Answer in 2-4 sentences. Include exact dates when available and mention source names. "
+                                "Do not include any URLs."
                             ),
                         },
                     ],
                 )
                 content = self._compact_text(str(response.choices[0].message.content or ""))
                 if content:
-                    return content
+                    return self._remove_urls_from_text(content)
             except Exception:
                 pass
-        return self._heuristic_question_answer(question, rows)
+        return self._remove_urls_from_text(self._heuristic_question_answer(question, rows))
+
+    def _build_h1b_results_live_answer(self, query: str, updates: list[dict[str, Any]]) -> str:
+        lowered = str(query or "").strip().lower()
+        h1b_terms = ("h1b", "h-1b")
+        results_terms = ("result", "results", "selection", "selected", "lottery", "date", "when", "timeline")
+        if not any(term in lowered for term in h1b_terms):
+            return ""
+        if not any(term in lowered for term in results_terms):
+            return ""
+        ranked = sorted([row for row in updates if isinstance(row, dict)], key=self._sort_key_published_date, reverse=True)
+        if not ranked:
+            return ""
+        h1b_rows = [
+            row
+            for row in ranked
+            if str(row.get("visa_category", "")).strip() == "H1B"
+            or "h1b" in self._compact_text(
+                f"{row.get('title', '')} {row.get('summary', '')} {' '.join(str(tag) for tag in row.get('tags', []))}"
+            ).lower().replace("-", "")
+        ]
+        if not h1b_rows:
+            return ""
+        latest = h1b_rows[0]
+        latest_title = self._compact_text(str(latest.get("title", "")).strip()) or "H1B update"
+        latest_source = self._compact_text(str(latest.get("source", "")).strip()) or "USCIS"
+        latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
+        fiscal_match = re.search(r"\bfy\s*(20\d{2})\b", " ".join(str(row.get("title", "")) for row in h1b_rows).lower())
+        fiscal_label = fiscal_match.group(1) if fiscal_match else "current"
+
+        corpus = " ".join(
+            self._compact_text(f"{row.get('title', '')} {row.get('summary', '')}").lower()
+            for row in h1b_rows[:6]
+        )
+        has_selection_completed = (
+            "selection process completed" in corpus
+            or "initial registration selection process completed" in corpus
+            or "selection process completes" in corpus
+            or "initial registration selection process completes" in corpus
+            or ("selection" in corpus and ("completed" in corpus or "completes" in corpus))
+        )
+        has_registration_open_notice = (
+            "registration period opens" in corpus
+            or "initial registration period opens" in corpus
+            or ("registration" in corpus and "opens" in corpus)
+        )
+
+        if has_selection_completed:
+            overview = (
+                f"As of {latest_date}, USCIS indicates FY {fiscal_label} is in post-lottery processing: "
+                "registration is closed, lottery is completed, and selected cases are in petition filing."
+            )
+            key_updates = [
+                f"USCIS update: {latest_title} ({latest_source}, {latest_date}).",
+                "Registration is closed; no new cap registrations can be submitted.",
+                "Lottery/initial selection is completed and results are visible in employer or attorney USCIS accounts.",
+                "Only selected registrations can move to petition filing during the filing window on the selection notice.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "Contact your employer or attorney to confirm your USCIS selection status and, "
+                "if selected, file the H-1B petition before the deadline in the selection notice."
+            )
+            status_line = "Registration Closed - Lottery Completed - Results Released - Petition Filing Phase"
+        elif has_registration_open_notice:
+            overview = (
+                f"USCIS indicates FY {fiscal_label} registration is in the registration window stage "
+                "or approaching registration open."
+            )
+            key_updates = [
+                f"USCIS update: {latest_title} ({latest_source}, {latest_date}).",
+                "Registration-related instructions apply only during the registration window shown by USCIS.",
+                "Lottery results are not final until USCIS posts selection completion updates.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "If registration is currently open, your employer should submit the H-1B electronic registration "
+                "before the USCIS deadline."
+            )
+            status_line = "Registration Open - Await Lottery Processing"
+        else:
+            overview = (
+                f"USCIS has posted H-1B lifecycle updates for FY {fiscal_label}, but current stage details "
+                "are not fully explicit in the latest item."
+            )
+            key_updates = [
+                f"Latest H-1B item: {latest_title} ({latest_source}, {latest_date}).",
+                "Use employer or attorney USCIS account status as the operational source of truth for selection outcomes.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "Check with your employer or attorney for your exact registration status and any active USCIS filing window."
+            )
+            status_line = "Registration Closed - Check Selection Status"
+
+        formatted_key_updates = "\n".join(f"- {item}" for item in key_updates if item)
+        return (
+            "---\n"
+            "Overview:\n"
+            f"{overview}\n\n"
+            "Key Updates:\n"
+            f"{formatted_key_updates}\n\n"
+            "Next Step:\n"
+            f"{next_step}\n\n"
+            "Status Line (very important):\n"
+            f"{status_line}\n"
+            "---"
+        )
+
+    @staticmethod
+    def _remove_urls_from_text(text: str) -> str:
+        cleaned = str(text or "")
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"https?://\S+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bwww\.\S+", "", cleaned, flags=re.IGNORECASE)
+        cleaned_lines = [re.sub(r"[ \t]+", " ", line).rstrip() for line in cleaned.splitlines()]
+        normalized = "\n".join(cleaned_lines).strip()
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized
 
     def list_recent_alerts(self, lookback_hours: int = 48, limit: int = 6) -> list[dict[str, Any]]:
         return self._repo.list_recent_alerts(lookback_hours=lookback_hours, limit=limit)
+
+    def list_uscis_forms(self, query: str = "", limit: int = 180) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(500, int(limit or 180)))
+        cleaned_query = self._compact_text(str(query or ""))
+        collected: list[dict[str, Any]] = []
+        sources = [
+            ("USCIS Forms", "https://www.uscis.gov/forms/all-forms"),
+            ("USCIS Forms", "https://www.uscis.gov/forms/forms"),
+        ]
+        for source_name, source_url in sources:
+            try:
+                payload = self._fetch_text(
+                    source_url,
+                    timeout_seconds=20,
+                    use_cache=True,
+                    cache_ttl_seconds=1800,
+                )
+            except Exception:
+                continue
+            if not str(payload or "").strip():
+                continue
+            collected.extend(
+                self._parse_uscis_form_index_links(
+                    source_name=source_name,
+                    html_text=payload,
+                    source_url=source_url,
+                    max_items=900,
+                )
+            )
+        collected.extend(self._list_supplemental_immigration_forms())
+
+        deduped: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in collected:
+            download_url = self._canonicalize_link(str(item.get("download_url", "")).strip())
+            if not download_url or download_url in seen_urls:
+                continue
+            seen_urls.add(download_url)
+            deduped.append(item)
+
+        if cleaned_query:
+            deduped = self._filter_uscis_forms_by_query(deduped, cleaned_query)
+
+        deduped.sort(
+            key=lambda row: (
+                str(row.get("form_number", "")).strip().replace("-", "").lower(),
+                str(row.get("title", "")).strip().lower(),
+            )
+        )
+        return deduped[:safe_limit]
+
+    def download_uscis_form_pdf(
+        self,
+        download_url: str,
+        timeout_seconds: int = 28,
+        max_bytes: int = 20 * 1024 * 1024,
+    ) -> tuple[bytes, str, str]:
+        clean_url = self._canonicalize_link(download_url)
+        if not clean_url:
+            return b"", "", "Form download link is unavailable."
+        if not self._is_official_form_download_link(clean_url):
+            return b"", "", "Only official USCIS/DHS form downloads are supported."
+
+        resolved_url = clean_url
+        parsed = urlsplit(resolved_url)
+        if not parsed.path.lower().endswith(".pdf"):
+            resolved_url = self._resolve_form_pdf_download_url(clean_url)
+            if not resolved_url:
+                return b"", "", "Could not find a downloadable USCIS PDF form for this item."
+            parsed = urlsplit(resolved_url)
+            if not parsed.path.lower().endswith(".pdf"):
+                return b"", "", "Selected file is not a downloadable PDF form."
+
+        request = Request(
+            resolved_url,
+            headers={
+                "User-Agent": "ZoSwi-Immigration-Forms/1.0",
+                "Accept": "application/pdf,*/*;q=0.8",
+            },
+        )
+        try:
+            with urlopen(request, timeout=max(8, int(timeout_seconds or 28))) as response:
+                content_type = str(response.headers.get("Content-Type", "") or "").lower()
+                chunks: list[bytes] = []
+                total_size = 0
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > max(1024 * 1024, int(max_bytes or 0)):
+                        return b"", "", "This form file is too large to download right now."
+                    chunks.append(chunk)
+            payload = b"".join(chunks)
+            if not payload:
+                return b"", "", "Unable to download the form right now."
+            if "pdf" not in content_type and not payload.startswith(b"%PDF"):
+                return b"", "", "Source did not return a valid PDF form."
+            file_name = self._build_safe_pdf_file_name(resolved_url)
+            return payload, file_name, ""
+        except URLError:
+            return b"", "", "USCIS form source is temporarily unavailable. Please try again."
+        except Exception:
+            return b"", "", "Unable to download the form right now. Please try again."
 
     def build_ai_brief(self, articles: list[dict[str, Any]], query: str = "", categories: list[str] | None = None) -> str:
         top_articles = [item for item in articles if isinstance(item, dict)][:8]
@@ -792,8 +1024,296 @@ class ImmigrationUpdatesService:
             scope_line
             + "\n\nKey updates:\n"
             + "\n".join(bullets)
-            + "\n\nNext step: review source links and verify date-specific guidance before acting."
+            + "\n\nNext step: review official source updates and verify date-specific guidance before acting."
         )
+
+    def _parse_uscis_form_index_links(
+        self,
+        source_name: str,
+        html_text: str,
+        source_url: str,
+        max_items: int = 900,
+    ) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        cleaned_html = str(html_text or "")
+        if not cleaned_html:
+            return collected
+
+        anchor_pattern = re.compile(
+            r"<a[^>]+href=[\"'](?P<href>[^\"']+)[\"'][^>]*>(?P<label>.*?)</a>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        seen_by_url: dict[str, int] = {}
+        for match in anchor_pattern.finditer(cleaned_html):
+            href = str(match.group("href") or "").strip()
+            label_html = str(match.group("label") or "").strip()
+            resolved = self._canonicalize_link(self._resolve_link(source_url, href))
+            if not resolved or not self._is_official_uscis_link(resolved):
+                continue
+
+            parsed = urlsplit(resolved)
+            path = str(parsed.path or "").strip()
+            if not self._is_probable_uscis_form_detail_path(path):
+                continue
+
+            label_text = self._compact_text(self._strip_html(label_html)).replace("|", " - ")
+            label_text = self._compact_text(label_text)
+            if label_text.lower() in {"form details", "form detail"}:
+                label_text = ""
+
+            normalized_path_id = path.strip("/").upper()
+            form_number = self._extract_form_number(f"{label_text} {normalized_path_id}")
+            if not form_number:
+                form_number = normalized_path_id
+
+            title = label_text or f"Form {form_number}"
+            if form_number and form_number.lower() not in title.lower():
+                title = f"Form {form_number} - {title}"
+
+            item = {
+                "form_number": form_number[:24] or "USCIS Form",
+                "title": title[:240],
+                "download_url": resolved,
+                "file_name": f"{normalized_path_id.lower()}.pdf",
+                "source": source_name,
+            }
+
+            existing_index = seen_by_url.get(resolved)
+            if existing_index is not None:
+                previous_title = str(collected[existing_index].get("title", "")).strip()
+                if previous_title.lower() in {"form details", f"form {form_number.lower()}"} and len(title) > len(previous_title):
+                    collected[existing_index] = item
+                continue
+
+            seen_by_url[resolved] = len(collected)
+            collected.append(item)
+            if len(collected) >= max(1, int(max_items or 1)):
+                break
+        return collected
+
+    @staticmethod
+    def _list_supplemental_immigration_forms() -> list[dict[str, Any]]:
+        # Supplemental official forms commonly needed in F1/STEM workflows.
+        return [
+            {
+                "form_number": "I-983",
+                "title": "I-983 - Training Plan for STEM OPT Students",
+                "download_url": "https://www.ice.gov/doclib/sevis/pdf/i983.pdf",
+                "file_name": "i-983.pdf",
+                "source": "DHS ICE SEVP",
+            },
+        ]
+
+    def _resolve_form_pdf_download_url(self, raw_url: str) -> str:
+        clean_url = self._canonicalize_link(raw_url)
+        if not clean_url or not self._is_official_uscis_link(clean_url):
+            return ""
+        parsed = urlsplit(clean_url)
+        path = str(parsed.path or "").strip()
+        if path.lower().endswith(".pdf"):
+            return clean_url
+        if not self._is_probable_uscis_form_detail_path(path):
+            return ""
+
+        try:
+            payload = self._fetch_text(
+                clean_url,
+                timeout_seconds=20,
+                use_cache=True,
+                cache_ttl_seconds=1800,
+            )
+        except Exception:
+            return ""
+        if not str(payload or "").strip():
+            return ""
+
+        candidates = self._parse_uscis_form_links(
+            source_name="USCIS Form Detail",
+            html_text=payload,
+            source_url=clean_url,
+            max_items=180,
+        )
+        if not candidates:
+            return ""
+
+        slug = path.strip("/").lower()
+        slug_alnum = re.sub(r"[^a-z0-9]+", "", slug)
+        ranked: list[tuple[int, int, str]] = []
+        for idx, item in enumerate(candidates):
+            candidate_url = self._canonicalize_link(str(item.get("download_url", "")).strip())
+            if not candidate_url or not self._is_official_uscis_link(candidate_url):
+                continue
+            candidate_path = str(urlsplit(candidate_url).path or "").strip().lower()
+            if not candidate_path.endswith(".pdf"):
+                continue
+
+            file_name = unquote(candidate_path.split("/")[-1]).strip().lower()
+            file_core = file_name[:-4] if file_name.endswith(".pdf") else file_name
+            file_alnum = re.sub(r"[^a-z0-9]+", "", file_core)
+
+            score = 0
+            if "/sites/default/files/document/forms/" in candidate_path:
+                score += 12
+            elif "/document/forms/" in candidate_path:
+                score += 9
+
+            if slug_alnum and file_alnum.startswith(slug_alnum):
+                score += 8
+            elif slug_alnum and slug_alnum in file_alnum:
+                score += 4
+
+            if "instr" in file_core or "instruction" in file_core:
+                score -= 2
+            if "worksheet" in file_core or "supp" in file_core:
+                score -= 1
+
+            ranked.append((score, -idx, candidate_url))
+
+        if not ranked:
+            return ""
+        ranked.sort(reverse=True)
+        return ranked[0][2]
+
+    def _parse_uscis_form_links(
+        self,
+        source_name: str,
+        html_text: str,
+        source_url: str,
+        max_items: int = 1200,
+    ) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        cleaned_html = str(html_text or "")
+        if not cleaned_html:
+            return collected
+        anchor_pattern = re.compile(
+            r"<a[^>]+href=[\"'](?P<href>[^\"']+)[\"'][^>]*>(?P<label>.*?)</a>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for match in anchor_pattern.finditer(cleaned_html):
+            href = str(match.group("href") or "").strip()
+            label_html = str(match.group("label") or "").strip()
+            resolved = self._canonicalize_link(self._resolve_link(source_url, href))
+            if not resolved or not self._is_official_uscis_link(resolved):
+                continue
+            if ".pdf" not in resolved.lower():
+                continue
+            parsed = urlsplit(resolved)
+            file_name = unquote(str(parsed.path or "").split("/")[-1]).strip()
+            if not file_name.lower().endswith(".pdf"):
+                continue
+
+            label_text = self._compact_text(self._strip_html(label_html))
+            if not label_text:
+                label_text = self._compact_text(file_name.rsplit(".", 1)[0].replace("-", " ").replace("_", " "))
+
+            form_number = self._extract_form_number(f"{label_text} {file_name}")
+            if not form_number and "form" not in label_text.lower():
+                continue
+
+            title = label_text
+            if form_number and form_number.lower() not in title.lower():
+                title = f"Form {form_number} - {title}"
+            collected.append(
+                {
+                    "form_number": form_number or "USCIS Form",
+                    "title": title[:240],
+                    "download_url": resolved,
+                    "file_name": file_name[:120] or "uscis-form.pdf",
+                    "source": source_name,
+                }
+            )
+            if len(collected) >= max(1, int(max_items or 1)):
+                break
+        return collected
+
+    def _filter_uscis_forms_by_query(self, forms: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+        cleaned_query = self._compact_text(query).lower()
+        if not cleaned_query:
+            return list(forms)
+        tokens = [token for token in re.findall(r"[a-z0-9\-]+", cleaned_query) if token]
+        if not tokens:
+            return list(forms)
+
+        filtered: list[dict[str, Any]] = []
+        for item in forms:
+            form_number = self._compact_text(str(item.get("form_number", ""))).lower()
+            title = self._compact_text(str(item.get("title", ""))).lower()
+            file_name = self._compact_text(str(item.get("file_name", ""))).lower()
+            corpus = " ".join([form_number, title, file_name]).strip()
+            compact_corpus = corpus.replace("-", "")
+            if cleaned_query in corpus or cleaned_query.replace("-", "") in compact_corpus:
+                filtered.append(item)
+                continue
+            matched = True
+            for token in tokens:
+                if token not in corpus and token.replace("-", "") not in compact_corpus:
+                    matched = False
+                    break
+            if matched:
+                filtered.append(item)
+        return filtered
+
+    @staticmethod
+    def _extract_form_number(value: str) -> str:
+        cleaned = ImmigrationUpdatesService._compact_text(value).upper()
+        if not cleaned:
+            return ""
+        patterns = [
+            r"\b([A-Z]{1,3})\s*-\s*(\d{1,4}[A-Z]{0,5})\b",
+            r"\b([A-Z]{1,3})(\d{1,4}[A-Z]{0,5})\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, cleaned)
+            if match is None:
+                continue
+            prefix = str(match.group(1) or "").strip()
+            suffix = str(match.group(2) or "").strip()
+            if not prefix or not suffix:
+                continue
+            return f"{prefix}-{suffix}"
+        return ""
+
+    @staticmethod
+    def _build_safe_pdf_file_name(download_url: str) -> str:
+        parsed = urlsplit(str(download_url or "").strip())
+        raw_name = unquote(str(parsed.path or "").split("/")[-1]).strip()
+        if not raw_name:
+            raw_name = "uscis-form.pdf"
+        cleaned_name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-")
+        if not cleaned_name:
+            cleaned_name = "uscis-form.pdf"
+        if not cleaned_name.lower().endswith(".pdf"):
+            cleaned_name += ".pdf"
+        return cleaned_name[:160]
+
+    @staticmethod
+    def _is_official_uscis_link(raw_url: str) -> bool:
+        parsed = urlsplit(str(raw_url or "").strip())
+        host = str(parsed.netloc or "").strip().lower()
+        if not host:
+            return False
+        return host == "uscis.gov" or host == "www.uscis.gov" or host.endswith(".uscis.gov")
+
+    @staticmethod
+    def _is_official_form_download_link(raw_url: str) -> bool:
+        parsed = urlsplit(str(raw_url or "").strip())
+        host = str(parsed.netloc or "").strip().lower()
+        if not host:
+            return False
+        if host == "uscis.gov" or host == "www.uscis.gov" or host.endswith(".uscis.gov"):
+            return True
+        if host == "ice.gov" or host == "www.ice.gov" or host.endswith(".ice.gov"):
+            return True
+        return False
+
+    @staticmethod
+    def _is_probable_uscis_form_detail_path(raw_path: str) -> bool:
+        cleaned = str(raw_path or "").strip().lower()
+        if not cleaned:
+            return False
+        if not cleaned.startswith("/"):
+            return False
+        return bool(re.fullmatch(r"/[a-z]{1,3}-\d{1,4}[a-z]{0,5}", cleaned))
 
     def _classify_item(self, title: str, raw_text: str, link: str, source: str) -> tuple[str, list[str]]:
         corpus = " ".join([str(title or ""), str(raw_text or ""), str(link or ""), str(source or "")]).lower()
@@ -852,7 +1372,6 @@ class ImmigrationUpdatesService:
                 latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
                 latest_title = str(latest.get("title", "")).strip() or "H1B update"
                 latest_source = str(latest.get("source", "")).strip() or "source"
-                latest_link = str(latest.get("link", "")).strip()
                 if "result" in lowered or "selection" in lowered:
                     base = (
                         f"The latest H1B-related update in this dashboard is from {latest_date} "
@@ -860,22 +1379,17 @@ class ImmigrationUpdatesService:
                     )
                     if "2027" in lowered:
                         base += " I do not currently see an official FY2027 selection-result date in the fetched updates."
-                    if latest_link:
-                        base += f" Source: {latest_link}"
                     return base
                 return (
                     f"Latest H1B-related update: {latest_title} ({latest_source}, {latest_date}). "
-                    f"Open the source link in the feed for full details."
+                    "Check your employer or attorney USCIS account status for exact case-level details."
                 )
 
         latest = ranked[0]
         latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
         latest_title = str(latest.get("title", "")).strip() or "Immigration update"
         latest_source = str(latest.get("source", "")).strip() or "source"
-        latest_link = str(latest.get("link", "")).strip()
         answer = f"Latest related update: {latest_title} ({latest_source}, {latest_date})."
-        if latest_link:
-            answer += f" Source: {latest_link}"
         return answer
 
     def _build_h1b_timeline_answer(self, query: str) -> str:
@@ -1026,6 +1540,135 @@ class ImmigrationUpdatesService:
             seen.add(key)
             deduped.append(normalized_item)
         return deduped[:8]
+
+    def _select_query_relevant_updates(
+        self,
+        query: str,
+        updates: list[dict[str, Any]],
+        limit: int = 8,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        rows = [item for item in updates if isinstance(item, dict)]
+        if not rows:
+            return [], False
+        safe_limit = max(1, min(20, int(limit or 8)))
+        ranked_latest = sorted(rows, key=self._sort_key_published_date, reverse=True)
+        cleaned_query = self._compact_text(str(query or "")).lower()
+        if not cleaned_query:
+            return ranked_latest[:safe_limit], bool(ranked_latest)
+
+        raw_tokens = re.findall(r"[a-z0-9\-]+", cleaned_query)
+        stop_words = {
+            "when",
+            "what",
+            "where",
+            "which",
+            "who",
+            "why",
+            "how",
+            "is",
+            "are",
+            "was",
+            "were",
+            "the",
+            "a",
+            "an",
+            "of",
+            "for",
+            "to",
+            "in",
+            "on",
+            "and",
+            "with",
+            "about",
+            "from",
+            "any",
+            "there",
+            "this",
+            "that",
+            "current",
+            "today",
+            "latest",
+            "new",
+            "news",
+            "update",
+            "updates",
+            "status",
+        }
+        tokens: list[str] = []
+        for token in raw_tokens:
+            normalized = token.replace("-", "")
+            if normalized in {"h1b", "f1", "eb1", "eb2", "eb3"}:
+                tokens.append(normalized)
+                continue
+            if token in stop_words:
+                continue
+            if len(token) < 3:
+                continue
+            tokens.append(token)
+        deduped_tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        for token in tokens:
+            key = token.lower()
+            if key in seen_tokens:
+                continue
+            seen_tokens.add(key)
+            deduped_tokens.append(key)
+
+        broad_only_tokens = {
+            "immigration",
+            "visa",
+            "visas",
+            "bulletin",
+            "policy",
+            "policies",
+        }
+        if deduped_tokens and all(token in broad_only_tokens for token in deduped_tokens):
+            return ranked_latest[:safe_limit], True
+
+        inferred_categories = set(self._infer_categories_from_query(cleaned_query))
+        scored_rows: list[tuple[int, float, dict[str, Any]]] = []
+        for row in rows:
+            haystack = self._compact_text(
+                " ".join(
+                    [
+                        str(row.get("title", "")).strip(),
+                        str(row.get("summary", "")).strip(),
+                        str(row.get("source", "")).strip(),
+                        str(row.get("visa_category", "")).strip(),
+                        " ".join(str(tag).strip() for tag in row.get("tags", []) if str(tag).strip()),
+                    ]
+                )
+            ).lower()
+            dense_haystack = haystack.replace("-", "")
+            score = 0
+            if cleaned_query and cleaned_query in haystack:
+                score += 4
+            for token in deduped_tokens:
+                if token in {"h1b", "f1", "eb1", "eb2", "eb3"}:
+                    if token in dense_haystack:
+                        score += 3
+                elif token in haystack:
+                    score += 2
+            row_category = str(row.get("visa_category", "")).strip()
+            if row_category and row_category in inferred_categories:
+                score += 3
+            scored_rows.append((score, self._sort_key_published_date(row), row))
+
+        ranked_scored = sorted(scored_rows, key=lambda item: (item[0], item[1]), reverse=True)
+        matched_rows = [row for score, _ts, row in ranked_scored if score > 0]
+        if matched_rows:
+            return matched_rows[:safe_limit], True
+
+        if inferred_categories:
+            category_rows = [
+                row
+                for row in ranked_latest
+                if str(row.get("visa_category", "")).strip() in inferred_categories
+            ]
+            if category_rows:
+                return category_rows[:safe_limit], True
+
+        return ranked_latest[:safe_limit], False
 
     @staticmethod
     def _sort_key_published_date(row: dict[str, Any]) -> float:
